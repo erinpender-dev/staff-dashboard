@@ -2,12 +2,10 @@ export default async function handler(req, res) {
   const { code, shop } = req.query;
 
   if (!code || !shop) {
-    res.status(400).send("Missing code or shop");
-    return;
-  }
-
-  if (shop !== process.env.SHOPIFY_STORE) {
-    res.status(400).send("Shop does not match expected store");
+    res.status(400).send(`
+      <h1>Missing code or shop</h1>
+      <pre>${JSON.stringify(req.query, null, 2)}</pre>
+    `);
     return;
   }
 
@@ -25,15 +23,8 @@ export default async function handler(req, res) {
 
   const data = await response.json();
 
-  if (!data.access_token) {
-    res.status(500).send(`<pre>${JSON.stringify(data, null, 2)}</pre>`);
-    return;
-  }
-
   res.status(200).send(`
-    <h1>Success</h1>
-    <p>Copy this token and save it in Vercel as <strong>SHOPIFY_ACCESS_TOKEN</strong>.</p>
-    <pre style="white-space: pre-wrap; word-break: break-all;">${data.access_token}</pre>
-    <p>After you save it in Vercel, redeploy your project.</p>
+    <h1>Callback Result</h1>
+    <pre style="white-space: pre-wrap; word-break: break-all;">${JSON.stringify(data, null, 2)}</pre>
   `);
 }
