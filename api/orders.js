@@ -6,20 +6,32 @@ export default async function handler(req, res) {
 
   if (!shop || !token) {
     res.status(500).json({
-      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN in Vercel environment variables."
+      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
     });
     return;
   }
 
-  const response = await fetch(
-    `https://${shop}/admin/api/2025-10/orders.json?status=open&fulfillment_status=unfulfilled`,
-    {
-      headers: {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  const status = req.query.status || "any";
+  const fulfillmentStatus = req.query.fulfillment_status || "";
+  const financialStatus = req.query.financial_status || "";
+  const limit = req.query.limit || "50";
+
+  let url = `https://${shop}/admin/api/2025-10/orders.json?status=${encodeURIComponent(status)}&limit=${encodeURIComponent(limit)}`;
+
+  if (fulfillmentStatus) {
+    url += `&fulfillment_status=${encodeURIComponent(fulfillmentStatus)}`;
+  }
+
+  if (financialStatus) {
+    url += `&financial_status=${encodeURIComponent(financialStatus)}`;
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+    },
+  });
 
   const data = await response.json();
   res.status(200).json(data);
