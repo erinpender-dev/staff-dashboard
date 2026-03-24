@@ -220,8 +220,8 @@ function getPartialPayments(saved) {
 
 function metaobjectFieldsToMap(metaobject) {
   const map = {};
-
   const fields = Array.isArray(metaobject?.fields) ? metaobject.fields : [];
+
   for (const field of fields) {
     if (!field?.key) continue;
     map[field.key] = field;
@@ -230,17 +230,12 @@ function metaobjectFieldsToMap(metaobject) {
   return map;
 }
 
-function getMetaobjectFieldValue(metaobject, key) {
-  const map = metaobjectFieldsToMap(metaobject);
-  return clean(map[key]?.value);
-}
-
-function getReferencedMetaobjectName(metaobjectField) {
-  const reference = metaobjectField?.reference;
+function getReferencedMetaobjectName(field) {
+  const reference = field?.reference;
   if (!reference) return "";
 
   const refFields = Array.isArray(reference.fields) ? reference.fields : [];
-  const nameField = refFields.find((field) => field?.key === "name");
+  const nameField = refFields.find((item) => item?.key === "name");
 
   return clean(nameField?.value);
 }
@@ -277,18 +272,18 @@ function parseClientContactMetafield(metafield) {
   const contacts = [];
 
   if (metafield.reference) {
-    const single = parseClientContactMetaobject(metafield.reference);
-    if (single) contacts.push(single);
+    const parsed = parseClientContactMetaobject(metafield.reference);
+    if (parsed) contacts.push(parsed);
   }
 
-  const referenceNodes = metafield.references?.nodes || [];
-  for (const node of referenceNodes) {
+  const nodes = metafield.references?.nodes || [];
+  for (const node of nodes) {
     const parsed = parseClientContactMetaobject(node);
     if (parsed) contacts.push(parsed);
   }
 
-  const deduped = [];
   const seen = new Set();
+  const deduped = [];
 
   for (const contact of contacts) {
     const key = JSON.stringify(contact);
@@ -314,11 +309,15 @@ async function shopifyGraphQL(shop, token, query, variables = {}) {
   const json = await response.json();
 
   if (!response.ok) {
-    throw new Error(json?.errors?.[0]?.message || "Shopify GraphQL request failed");
+    throw new Error(
+      json?.errors?.[0]?.message ||
+      json?.error ||
+      "Shopify GraphQL request failed"
+    );
   }
 
   if (json.errors?.length) {
-    throw new Error(json.errors[0]?.message || "Shopify GraphQL error");
+    throw new Error(json.errors.map((e) => e.message).join(" | "));
   }
 
   return json.data;
@@ -338,6 +337,7 @@ async function fetchClientContactMetafield(shop, token, orderId) {
               ... on Metaobject {
                 id
                 type
+                handle
                 fields {
                   key
                   value
@@ -345,6 +345,7 @@ async function fetchClientContactMetafield(shop, token, orderId) {
                     ... on Metaobject {
                       id
                       type
+                      handle
                       fields {
                         key
                         value
@@ -359,6 +360,7 @@ async function fetchClientContactMetafield(shop, token, orderId) {
                 ... on Metaobject {
                   id
                   type
+                  handle
                   fields {
                     key
                     value
@@ -366,6 +368,7 @@ async function fetchClientContactMetafield(shop, token, orderId) {
                       ... on Metaobject {
                         id
                         type
+                        handle
                         fields {
                           key
                           value
@@ -417,6 +420,7 @@ export default async function handler(req, res) {
     const fulfillmentStatus = req.query.fulfillment_status || "";
     const financialStatus = req.query.financial_status || "";
     const limit = req.query.limit || "50";
+    const debugMode = String(req.query.debug || "") === "1";
 
     let url = `https://${shop}/admin/api/2025-10/orders.json?status=${encodeURIComponent(
       status
@@ -462,6 +466,9 @@ export default async function handler(req, res) {
     const orders = await Promise.all(
       rawOrders.map(async (order) => {
         let saved = null;
+        let metafield = null;
+        let metafieldError = "";
+        let metafieldContacts = [];
 
         try {
           saved = await readPrivateJson(order.id);
@@ -469,11 +476,13 @@ export default async function handler(req, res) {
           saved = null;
         }
 
-        let metafield = null;
         try {
           metafield = await fetchClientContactMetafield(shop, token, order.id);
+          metafieldContacts = parseClientContactMetafield(metafield);
         } catch (error) {
+          metafieldError = error.message || String(error);
           metafield = null;
+          metafieldContacts = [];
         }
 
         const shopifyCustomerName = getShopifyCustomerName(order);
@@ -481,13 +490,12 @@ export default async function handler(req, res) {
         const shopifyCustomerPhone = getShopifyCustomerPhone(order);
         const shopifyPreparedFor = getPreparedFor(order);
 
-        const metafieldContacts = parseClientContactMetafield(metafield);
         const savedContacts = getClientContacts(saved);
         const clientContacts = metafieldContacts.length ? metafieldContacts : savedContacts;
         const organizations = getOrganizations(saved, clientContacts);
         const partialPayments = getPartialPayments(saved);
 
-        return {
+        const result = {
           id: order.id,
           name: order.name,
           order_number: order.order_number,
@@ -533,7 +541,7 @@ export default async function handler(req, res) {
           partial_payments: partialPayments,
 
           client_contacts: clientContacts,
-          contact_metafield: clientContacts,
+          contact_metafield: metafieldContacts,
           organizations: organizations,
 
           item_count: Array.isArray(order.line_items)
@@ -551,6 +559,23 @@ export default async function handler(req, res) {
             price: clean(item.price)
           }))
         };
+
+        if (debugMode) {
+          result.metafield_debug = {
+            has_metafield: !!metafield,
+            metafield_type: metafield?.type || "",
+            metafield_value: metafield?.value || "",
+            has_single_reference: !!metafield?.reference,
+            references_count: Array.isArray(metafield?.references?.nodes)
+              ? metafield.references.nodes.length
+              : 0,
+            parsed_contacts_count: metafieldContacts.length,
+            parsed_contacts: metafieldContacts,
+            graphql_error: metafieldError
+          };
+        }
+
+        return result;
       })
     );
 
