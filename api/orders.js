@@ -1,3 +1,56 @@
+async function shopifyGraphQL(shop, token, query, variables = {}) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok || data.errors) {
+    throw new Error(JSON.stringify(data.errors || data || {}));
+  }
+
+  return data.data;
+}
+
+function mapDisplayFulfillmentStatus(displayStatus, fallbackFulfillmentStatus, currentPickupStatus) {
+  const normalized = String(displayStatus || "").toUpperCase();
+
+  if (normalized === "READY_FOR_PICKUP") {
+    return {
+      fulfillment_status: "unfulfilled",
+      pickup_status: "ready_for_pickup",
+      display_fulfillment_status: normalized
+    };
+  }
+
+  if (normalized === "FULFILLED") {
+    return {
+      fulfillment_status: "fulfilled",
+      pickup_status: currentPickupStatus || "picked_up",
+      display_fulfillment_status: normalized
+    };
+  }
+
+  if (normalized === "PARTIALLY_FULFILLED") {
+    return {
+      fulfillment_status: "partial",
+      pickup_status: currentPickupStatus || "not_ready",
+      display_fulfillment_status: normalized
+    };
+  }
+
+  return {
+    fulfillment_status: fallbackFulfillmentStatus,
+    pickup_status: currentPickupStatus || "not_ready",
+    display_fulfillment_status: normalized || ""
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -59,6 +112,55 @@ export default async function handler(req, res) {
 
     let orders = Array.isArray(data.orders) ? data.orders.map(normalizeOrder) : [];
 
+    // Safe GraphQL overlay for Shopify display fulfillment status
+    try {
+      const gqlQuery = `
+        query GetOrderStatuses($first: Int!) {
+          orders(first: $first, reverse: true, sortKey: CREATED_AT) {
+            edges {
+              node {
+                legacyResourceId
+                displayFulfillmentStatus
+              }
+            }
+          }
+        }
+      `;
+
+      const gqlData = await shopifyGraphQL(shop, token, gqlQuery, {
+        first: Math.min(Number(limit || 100), 100)
+      });
+
+      const statusMap = new Map(
+        (gqlData?.orders?.edges || []).map((edge) => [
+          String(edge.node.legacyResourceId),
+          String(edge.node.displayFulfillmentStatus || "")
+        ])
+      );
+
+      orders = orders.map((order) => {
+        const displayStatus = statusMap.get(String(order.id)) || "";
+        const mapped = mapDisplayFulfillmentStatus(
+          displayStatus,
+          String(order.fulfillment_status || "").toLowerCase(),
+          String(order.pickup_status || "").toLowerCase()
+        );
+
+        return {
+          ...order,
+          fulfillment_status: mapped.fulfillment_status,
+          pickup_status: mapped.pickup_status,
+          display_fulfillment_status: mapped.display_fulfillment_status,
+          metafields: {
+            ...(order.metafields || {}),
+            pickup_status: mapped.pickup_status
+          }
+        };
+      });
+    } catch (overlayError) {
+      console.error("GraphQL status overlay failed:", overlayError.message);
+    }
+
     if (fulfillmentStatus === "needs_fulfillment") {
       orders = orders.filter((order) => String(order.fulfillment_status || "").toLowerCase() !== "fulfilled");
     }
@@ -86,6 +188,7 @@ function normalizeOrder(order) {
   const shippingLines = Array.isArray(order.shipping_lines) ? order.shipping_lines : [];
   const shippingTitle = shippingLines.map((line) => String(line?.title || "")).join(" ").toLowerCase();
   const shippingCode = shippingLines.map((line) => String(line?.code || "")).join(" ").toLowerCase();
+
   const hasLocalPickup =
     shippingTitle.includes("pickup") ||
     shippingCode.includes("pickup") ||
@@ -113,6 +216,7 @@ function normalizeOrder(order) {
     tags,
     delivery_method: deliveryMethod,
     pickup_status: pickupStatus,
+    display_fulfillment_status: "",
     metafields: {
       school_tag: noteAttributes.school_tag || "",
       student_info: noteAttributes.student_info || "",
