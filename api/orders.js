@@ -501,6 +501,11 @@ res.setHeader("Surrogate-Control", "no-store");
           name: order.name,
           order_number: order.order_number,
           created_at: order.created_at,
+
+          raw_saved_internal_order_status: clean(saved?.internal_order_status),
+raw_saved_internal_payment_status: clean(saved?.internal_payment_status),
+raw_saved_updated_at: clean(saved?.updated_at),
+
           financial_status: clean(order.financial_status),
           fulfillment_status: clean(order.fulfillment_status || "unfulfilled"),
           total_price: clean(order.total_price),
