@@ -124,13 +124,12 @@ async function readPrivateJson(orderId) {
   const url = `${baseUrl}/${getPath(orderId)}`;
 
   const response = await fetch(`${url}?ts=${Date.now()}`, {
-  headers: {
-    Authorization: `Bearer ${token}`,
-    "Cache-Control": "no-cache"
-  },
-  cache: "no-store"
-});
-
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Cache-Control": "no-cache"
+    },
+    cache: "no-store"
+  });
 
   if (response.status === 404) {
     return null;
@@ -143,6 +142,7 @@ async function readPrivateJson(orderId) {
 
   return await response.json();
 }
+
 
 export default async function handler(req, res) {
   setCors(req, res);
