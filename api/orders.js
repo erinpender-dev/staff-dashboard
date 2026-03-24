@@ -137,16 +137,18 @@ function getClientContacts(saved) {
   for (const source of possibleSources) {
     const parsed = parseJsonSafe(source, null);
     if (Array.isArray(parsed) && parsed.length) {
-      return parsed.map(normalizeContact).filter((contact) => {
-        return (
-          contact.name ||
-          contact.email ||
-          contact.phone ||
-          contact.organization ||
-          contact.title ||
-          contact.role
-        );
-      });
+      return parsed
+        .map(normalizeContact)
+        .filter((contact) => {
+          return (
+            contact.name ||
+            contact.email ||
+            contact.phone ||
+            contact.organization ||
+            contact.title ||
+            contact.role
+          );
+        });
     }
   }
 
@@ -207,11 +209,187 @@ function getPartialPayments(saved) {
   const parsed = parseJsonSafe(saved?.partial_payments, []);
   if (!Array.isArray(parsed)) return [];
 
-  return parsed.map((payment) => ({
-    type: clean(payment?.type),
-    amount: clean(payment?.amount),
-    check_number: clean(payment?.check_number)
-  })).filter((payment) => payment.type || payment.amount || payment.check_number);
+  return parsed
+    .map((payment) => ({
+      type: clean(payment?.type),
+      amount: clean(payment?.amount),
+      check_number: clean(payment?.check_number)
+    }))
+    .filter((payment) => payment.type || payment.amount || payment.check_number);
+}
+
+function metaobjectFieldsToMap(metaobject) {
+  const map = {};
+
+  const fields = Array.isArray(metaobject?.fields) ? metaobject.fields : [];
+  for (const field of fields) {
+    if (!field?.key) continue;
+    map[field.key] = field;
+  }
+
+  return map;
+}
+
+function getMetaobjectFieldValue(metaobject, key) {
+  const map = metaobjectFieldsToMap(metaobject);
+  return clean(map[key]?.value);
+}
+
+function getReferencedMetaobjectName(metaobjectField) {
+  const reference = metaobjectField?.reference;
+  if (!reference) return "";
+
+  const refFields = Array.isArray(reference.fields) ? reference.fields : [];
+  const nameField = refFields.find((field) => field?.key === "name");
+
+  return clean(nameField?.value);
+}
+
+function parseClientContactMetaobject(metaobject) {
+  if (!metaobject) return null;
+
+  const fields = metaobjectFieldsToMap(metaobject);
+
+  const contact = {
+    name: clean(fields.name?.value),
+    email: clean(fields.email?.value),
+    phone: clean(fields.phone_number?.value),
+    organization: getReferencedMetaobjectName(fields.organization),
+    title: "",
+    role: ""
+  };
+
+  if (
+    !contact.name &&
+    !contact.email &&
+    !contact.phone &&
+    !contact.organization
+  ) {
+    return null;
+  }
+
+  return contact;
+}
+
+function parseClientContactMetafield(metafield) {
+  if (!metafield) return [];
+
+  const contacts = [];
+
+  if (metafield.reference) {
+    const single = parseClientContactMetaobject(metafield.reference);
+    if (single) contacts.push(single);
+  }
+
+  const referenceNodes = metafield.references?.nodes || [];
+  for (const node of referenceNodes) {
+    const parsed = parseClientContactMetaobject(node);
+    if (parsed) contacts.push(parsed);
+  }
+
+  const deduped = [];
+  const seen = new Set();
+
+  for (const contact of contacts) {
+    const key = JSON.stringify(contact);
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(contact);
+    }
+  }
+
+  return deduped;
+}
+
+async function shopifyGraphQL(shop, token, query, variables = {}) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const json = await response.json();
+
+  if (!response.ok) {
+    throw new Error(json?.errors?.[0]?.message || "Shopify GraphQL request failed");
+  }
+
+  if (json.errors?.length) {
+    throw new Error(json.errors[0]?.message || "Shopify GraphQL error");
+  }
+
+  return json.data;
+}
+
+async function fetchClientContactMetafield(shop, token, orderId) {
+  const query = `
+    query GetOrderClientContactInformation($id: ID!) {
+      node(id: $id) {
+        ... on Order {
+          id
+          metafield(namespace: "custom", key: "client_contact_information") {
+            id
+            type
+            value
+            reference {
+              ... on Metaobject {
+                id
+                type
+                fields {
+                  key
+                  value
+                  reference {
+                    ... on Metaobject {
+                      id
+                      type
+                      fields {
+                        key
+                        value
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            references(first: 20) {
+              nodes {
+                ... on Metaobject {
+                  id
+                  type
+                  fields {
+                    key
+                    value
+                    reference {
+                      ... on Metaobject {
+                        id
+                        type
+                        fields {
+                          key
+                          value
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(
+    shop,
+    token,
+    query,
+    { id: `gid://shopify/Order/${orderId}` }
+  );
+
+  return data?.node?.metafield || null;
 }
 
 export default async function handler(req, res) {
@@ -291,12 +469,21 @@ export default async function handler(req, res) {
           saved = null;
         }
 
+        let metafield = null;
+        try {
+          metafield = await fetchClientContactMetafield(shop, token, order.id);
+        } catch (error) {
+          metafield = null;
+        }
+
         const shopifyCustomerName = getShopifyCustomerName(order);
         const shopifyCustomerEmail = getShopifyCustomerEmail(order);
         const shopifyCustomerPhone = getShopifyCustomerPhone(order);
         const shopifyPreparedFor = getPreparedFor(order);
 
-        const clientContacts = getClientContacts(saved);
+        const metafieldContacts = parseClientContactMetafield(metafield);
+        const savedContacts = getClientContacts(saved);
+        const clientContacts = metafieldContacts.length ? metafieldContacts : savedContacts;
         const organizations = getOrganizations(saved, clientContacts);
         const partialPayments = getPartialPayments(saved);
 
@@ -323,12 +510,9 @@ export default async function handler(req, res) {
           custom_customer_email: clean(saved?.custom_customer_email),
           custom_customer_phone: clean(saved?.custom_customer_phone),
 
-          customer_name:
-            clean(saved?.custom_customer_name) || "",
-          customer_email:
-            clean(saved?.custom_customer_email) || "",
-          customer_phone:
-            clean(saved?.custom_customer_phone) || "",
+          customer_name: clean(saved?.custom_customer_name) || "",
+          customer_email: clean(saved?.custom_customer_email) || "",
+          customer_phone: clean(saved?.custom_customer_phone) || "",
 
           prepared_for:
             clean(saved?.prepared_for) || shopifyPreparedFor || shopifyCustomerName,
@@ -349,7 +533,8 @@ export default async function handler(req, res) {
           partial_payments: partialPayments,
 
           client_contacts: clientContacts,
-          organizations,
+          contact_metafield: clientContacts,
+          organizations: organizations,
 
           item_count: Array.isArray(order.line_items)
             ? order.line_items.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
