@@ -266,34 +266,18 @@ function parseClientContactMetaobject(metaobject) {
   return contact;
 }
 
-function parseClientContactMetafield(metafield) {
-  if (!metafield) return [];
+function parseMetaobjectIdsFromMetafieldValue(value) {
+  const parsed = parseJsonSafe(value, []);
 
-  const contacts = [];
-
-  if (metafield.reference) {
-    const parsed = parseClientContactMetaobject(metafield.reference);
-    if (parsed) contacts.push(parsed);
+  if (Array.isArray(parsed)) {
+    return parsed.map((id) => clean(id)).filter(Boolean);
   }
 
-  const nodes = metafield.references?.nodes || [];
-  for (const node of nodes) {
-    const parsed = parseClientContactMetaobject(node);
-    if (parsed) contacts.push(parsed);
+  if (typeof parsed === "string" && clean(parsed)) {
+    return [clean(parsed)];
   }
 
-  const seen = new Set();
-  const deduped = [];
-
-  for (const contact of contacts) {
-    const key = JSON.stringify(contact);
-    if (!seen.has(key)) {
-      seen.add(key);
-      deduped.push(contact);
-    }
-  }
-
-  return deduped;
+  return [];
 }
 
 async function shopifyGraphQL(shop, token, query, variables = {}) {
@@ -333,52 +317,6 @@ async function fetchClientContactMetafield(shop, token, orderId) {
             id
             type
             value
-            reference {
-              ... on Metaobject {
-                id
-                type
-                handle
-                fields {
-                  key
-                  value
-                  reference {
-                    ... on Metaobject {
-                      id
-                      type
-                      handle
-                      fields {
-                        key
-                        value
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            references(first: 20) {
-              nodes {
-                ... on Metaobject {
-                  id
-                  type
-                  handle
-                  fields {
-                    key
-                    value
-                    reference {
-                      ... on Metaobject {
-                        id
-                        type
-                        handle
-                        fields {
-                          key
-                          value
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
           }
         }
       }
@@ -393,6 +331,40 @@ async function fetchClientContactMetafield(shop, token, orderId) {
   );
 
   return data?.node?.metafield || null;
+}
+
+async function fetchMetaobjectsByIds(shop, token, ids) {
+  if (!Array.isArray(ids) || !ids.length) return [];
+
+  const query = `
+    query GetMetaobjectsByIds($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Metaobject {
+          id
+          type
+          handle
+          fields {
+            key
+            value
+            reference {
+              ... on Metaobject {
+                id
+                type
+                handle
+                fields {
+                  key
+                  value
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, { ids });
+  return Array.isArray(data?.nodes) ? data.nodes.filter(Boolean) : [];
 }
 
 export default async function handler(req, res) {
@@ -469,6 +441,8 @@ export default async function handler(req, res) {
         let metafield = null;
         let metafieldError = "";
         let metafieldContacts = [];
+        let metafieldMetaobjectIds = [];
+        let fetchedMetaobjects = [];
 
         try {
           saved = await readPrivateJson(order.id);
@@ -478,7 +452,11 @@ export default async function handler(req, res) {
 
         try {
           metafield = await fetchClientContactMetafield(shop, token, order.id);
-          metafieldContacts = parseClientContactMetafield(metafield);
+          metafieldMetaobjectIds = parseMetaobjectIdsFromMetafieldValue(metafield?.value);
+          fetchedMetaobjects = await fetchMetaobjectsByIds(shop, token, metafieldMetaobjectIds);
+          metafieldContacts = fetchedMetaobjects
+            .map((metaobject) => parseClientContactMetaobject(metaobject))
+            .filter(Boolean);
         } catch (error) {
           metafieldError = error.message || String(error);
           metafield = null;
@@ -565,10 +543,8 @@ export default async function handler(req, res) {
             has_metafield: !!metafield,
             metafield_type: metafield?.type || "",
             metafield_value: metafield?.value || "",
-            has_single_reference: !!metafield?.reference,
-            references_count: Array.isArray(metafield?.references?.nodes)
-              ? metafield.references.nodes.length
-              : 0,
+            metaobject_ids: metafieldMetaobjectIds,
+            fetched_metaobjects_count: fetchedMetaobjects.length,
             parsed_contacts_count: metafieldContacts.length,
             parsed_contacts: metafieldContacts,
             graphql_error: metafieldError
