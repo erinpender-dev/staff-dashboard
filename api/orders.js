@@ -57,6 +57,7 @@ export default async function handler(req, res) {
 
   const shop = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  const orderId = req.query.id;
 
   if (!shop || !token) {
     return res.status(500).json({
@@ -64,31 +65,20 @@ export default async function handler(req, res) {
     });
   }
 
+  if (!orderId) {
+    return res.status(400).json({ error: "Missing order id" });
+  }
+
   try {
-    const status = req.query.status || "any";
-    const fulfillmentStatus = req.query.fulfillment_status || "";
-    const financialStatus = req.query.financial_status || "";
-    const limit = req.query.limit || "50";
-
-    let url = `https://${shop}/admin/api/2025-10/orders.json?status=${encodeURIComponent(
-      status
-    )}&limit=${encodeURIComponent(limit)}&order=created_at desc`;
-
-    if (fulfillmentStatus) {
-      url += `&fulfillment_status=${encodeURIComponent(fulfillmentStatus)}`;
-    }
-
-    if (financialStatus) {
-      url += `&financial_status=${encodeURIComponent(financialStatus)}`;
-    }
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json"
+    const response = await fetch(
+      `https://${shop}/admin/api/2025-10/orders/${encodeURIComponent(orderId)}.json?status=any`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json"
+        }
       }
-    });
+    );
 
     const text = await response.text();
 
@@ -100,94 +90,97 @@ export default async function handler(req, res) {
     }
 
     const data = JSON.parse(text);
-    const rawOrders = data.orders || [];
+    const order = data.order;
 
-    const orders = await Promise.all(
-      rawOrders.map(async (order) => {
-        let saved = null;
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
 
-        try {
-          saved = await readPrivateJson(order.id);
-        } catch {
-          saved = null;
-        }
+    const saved = (await readPrivateJson(orderId)) || {};
 
-        const shopifyCustomerName =
-          order.customer
-            ? [order.customer.first_name, order.customer.last_name]
-                .filter(Boolean)
-                .join(" ")
-            : order.billing_address?.name ||
-              order.shipping_address?.name ||
-              "No customer name";
+    const shopifyCustomerName =
+      order.customer
+        ? [order.customer.first_name, order.customer.last_name]
+            .filter(Boolean)
+            .join(" ")
+        : order.billing_address?.name ||
+          order.shipping_address?.name ||
+          "No customer name";
 
-        const shopifyCustomerEmail =
-          order.email ||
-          order.customer?.email ||
-          order.contact_email ||
-          "";
+    const shopifyCustomerEmail =
+      order.email ||
+      order.customer?.email ||
+      order.contact_email ||
+      "";
 
-        const shopifyCustomerPhone =
-          order.phone ||
-          order.billing_address?.phone ||
-          order.shipping_address?.phone ||
-          order.customer?.phone ||
-          "";
+    const shopifyCustomerPhone =
+      order.phone ||
+      order.billing_address?.phone ||
+      order.shipping_address?.phone ||
+      order.customer?.phone ||
+      "";
 
-        const shopifyPreparedFor =
-          order.note_attributes?.find((attr) => {
-            const name = (attr.name || "").toLowerCase();
-            return (
-              name === "athlete name & sport" ||
-              name === "student info" ||
-              name === "prepared for"
-            );
-          })?.value || "";
+    const shopifyPreparedFor =
+      order.note_attributes?.find((attr) => {
+        const name = (attr.name || "").toLowerCase();
+        return (
+          name === "athlete name & sport" ||
+          name === "student info" ||
+          name === "prepared for"
+        );
+      })?.value || "";
 
-        return {
-          id: order.id,
-          name: order.name,
-          order_number: order.order_number,
-          created_at: order.created_at,
-          financial_status: order.financial_status,
-          fulfillment_status: order.fulfillment_status || "unfulfilled",
-          total_price: order.total_price,
-          currency: order.currency,
-          tags: order.tags || "",
-          note: order.note || "",
+    const merged = {
+      id: order.id,
+      name: order.name,
+      order_number: order.order_number,
+      created_at: order.created_at,
+      financial_status: order.financial_status,
+      fulfillment_status: order.fulfillment_status || "unfulfilled",
+      total_price: order.total_price,
+      subtotal_price: order.subtotal_price,
+      total_discounts: order.total_discounts,
+      total_tax: order.total_tax,
+      currency: order.currency,
+      tags: order.tags || "",
+      note: order.note || "",
 
-          shopify_customer_name: clean(shopifyCustomerName),
-          shopify_customer_email: clean(shopifyCustomerEmail),
-          shopify_customer_phone: clean(shopifyCustomerPhone),
+      shopify_customer_name: clean(shopifyCustomerName),
+      shopify_customer_email: clean(shopifyCustomerEmail),
+      shopify_customer_phone: clean(shopifyCustomerPhone),
+      shopify_prepared_for: clean(shopifyPreparedFor),
 
-          customer_name: clean(saved?.custom_customer_name) || clean(shopifyCustomerName),
-          customer_email: clean(saved?.custom_customer_email) || clean(shopifyCustomerEmail),
-          customer_phone: clean(saved?.custom_customer_phone) || clean(shopifyCustomerPhone),
-          prepared_for: clean(saved?.prepared_for) || clean(shopifyPreparedFor),
+      custom_customer_name: clean(saved.custom_customer_name),
+      custom_customer_email: clean(saved.custom_customer_email),
+      custom_customer_phone: clean(saved.custom_customer_phone),
 
-          custom_customer_name: clean(saved?.custom_customer_name),
-          custom_customer_email: clean(saved?.custom_customer_email),
-          custom_customer_phone: clean(saved?.custom_customer_phone),
-          school: clean(saved?.school),
-          sent_with: clean(saved?.sent_with),
-          delivery_notes: clean(saved?.delivery_notes),
-          staff_notes: clean(saved?.staff_notes),
-          production_notes: clean(saved?.production_notes),
+      customer_name: clean(saved.custom_customer_name) || clean(shopifyCustomerName),
+      customer_email: clean(saved.custom_customer_email) || clean(shopifyCustomerEmail),
+      customer_phone: clean(saved.custom_customer_phone) || clean(shopifyCustomerPhone),
+      prepared_for: clean(saved.prepared_for) || clean(shopifyPreparedFor),
 
-          item_count: order.line_items?.length || 0,
-          line_items: (order.line_items || []).map((item) => ({
-            title: item.title,
-            variant_title: item.variant_title,
-            sku: item.sku,
-            quantity: item.quantity,
-            vendor: item.vendor,
-            price: item.price
-          }))
-        };
-      })
-    );
+      school: clean(saved.school),
+      sent_with: clean(saved.sent_with),
+      delivery_notes: clean(saved.delivery_notes),
+      staff_notes: clean(saved.staff_notes),
+      production_notes: clean(saved.production_notes),
+      custom_updated_at: clean(saved.updated_at),
 
-    return res.status(200).json({ orders });
+      shipping_address: order.shipping_address || null,
+      billing_address: order.billing_address || null,
+
+      line_items: (order.line_items || []).map((item) => ({
+        id: item.id,
+        title: item.title,
+        variant_title: item.variant_title,
+        sku: item.sku,
+        quantity: item.quantity,
+        vendor: item.vendor,
+        price: item.price
+      }))
+    };
+
+    return res.status(200).json({ order: merged });
   } catch (error) {
     return res.status(500).json({
       error: "Server error",
