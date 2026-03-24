@@ -1,9 +1,51 @@
-export default async function handler(req, res) {
+function setCors(req, res) {
   const allowedOrigin = process.env.ALLOWED_ORIGIN || "*";
 
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function clean(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function getPath(orderId) {
+  return `order-details/${orderId}.json`;
+}
+
+async function readPrivateJson(orderId) {
+  const baseUrl = process.env.BLOB_BASE_URL;
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+
+  if (!baseUrl || !token) {
+    throw new Error("Missing BLOB_BASE_URL or BLOB_READ_WRITE_TOKEN");
+  }
+
+  const url = `${baseUrl}/${getPath(orderId)}`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Blob read failed: ${text}`);
+  }
+
+  return await response.json();
+}
+
+export default async function handler(req, res) {
+  setCors(req, res);
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -58,64 +100,92 @@ export default async function handler(req, res) {
     }
 
     const data = JSON.parse(text);
+    const rawOrders = data.orders || [];
 
-    const orders = (data.orders || []).map((order) => {
-      const customerName =
-        order.customer
-          ? [order.customer.first_name, order.customer.last_name]
-              .filter(Boolean)
-              .join(" ")
-          : order.billing_address?.name ||
-            order.shipping_address?.name ||
-            "No customer name";
+    const orders = await Promise.all(
+      rawOrders.map(async (order) => {
+        let saved = null;
 
-      const customerEmail =
-        order.email ||
-        order.customer?.email ||
-        order.contact_email ||
-        "";
+        try {
+          saved = await readPrivateJson(order.id);
+        } catch {
+          saved = null;
+        }
 
-      const customerPhone =
-        order.phone ||
-        order.billing_address?.phone ||
-        order.shipping_address?.phone ||
-        order.customer?.phone ||
-        "";
+        const shopifyCustomerName =
+          order.customer
+            ? [order.customer.first_name, order.customer.last_name]
+                .filter(Boolean)
+                .join(" ")
+            : order.billing_address?.name ||
+              order.shipping_address?.name ||
+              "No customer name";
 
-      const preparedFor =
-        order.note_attributes?.find(
-          (attr) =>
-            (attr.name || "").toLowerCase() === "athlete name & sport" ||
-            (attr.name || "").toLowerCase() === "student info" ||
-            (attr.name || "").toLowerCase() === "prepared for"
-        )?.value || "";
+        const shopifyCustomerEmail =
+          order.email ||
+          order.customer?.email ||
+          order.contact_email ||
+          "";
 
-      return {
-        id: order.id,
-        name: order.name,
-        order_number: order.order_number,
-        created_at: order.created_at,
-        financial_status: order.financial_status,
-        fulfillment_status: order.fulfillment_status || "unfulfilled",
-        total_price: order.total_price,
-        currency: order.currency,
-        tags: order.tags || "",
-        note: order.note || "",
-        customer_name: customerName,
-        customer_email: customerEmail,
-        customer_phone: customerPhone,
-        prepared_for: preparedFor,
-        item_count: order.line_items?.length || 0,
-        line_items: (order.line_items || []).map((item) => ({
-          title: item.title,
-          variant_title: item.variant_title,
-          sku: item.sku,
-          quantity: item.quantity,
-          vendor: item.vendor,
-          price: item.price
-        }))
-      };
-    });
+        const shopifyCustomerPhone =
+          order.phone ||
+          order.billing_address?.phone ||
+          order.shipping_address?.phone ||
+          order.customer?.phone ||
+          "";
+
+        const shopifyPreparedFor =
+          order.note_attributes?.find((attr) => {
+            const name = (attr.name || "").toLowerCase();
+            return (
+              name === "athlete name & sport" ||
+              name === "student info" ||
+              name === "prepared for"
+            );
+          })?.value || "";
+
+        return {
+          id: order.id,
+          name: order.name,
+          order_number: order.order_number,
+          created_at: order.created_at,
+          financial_status: order.financial_status,
+          fulfillment_status: order.fulfillment_status || "unfulfilled",
+          total_price: order.total_price,
+          currency: order.currency,
+          tags: order.tags || "",
+          note: order.note || "",
+
+          shopify_customer_name: clean(shopifyCustomerName),
+          shopify_customer_email: clean(shopifyCustomerEmail),
+          shopify_customer_phone: clean(shopifyCustomerPhone),
+
+          customer_name: clean(saved?.custom_customer_name) || clean(shopifyCustomerName),
+          customer_email: clean(saved?.custom_customer_email) || clean(shopifyCustomerEmail),
+          customer_phone: clean(saved?.custom_customer_phone) || clean(shopifyCustomerPhone),
+          prepared_for: clean(saved?.prepared_for) || clean(shopifyPreparedFor),
+
+          custom_customer_name: clean(saved?.custom_customer_name),
+          custom_customer_email: clean(saved?.custom_customer_email),
+          custom_customer_phone: clean(saved?.custom_customer_phone),
+          school: clean(saved?.school),
+          sent_with: clean(saved?.sent_with),
+          delivery_notes: clean(saved?.delivery_notes),
+          staff_notes: clean(saved?.staff_notes),
+          production_notes: clean(saved?.production_notes),
+
+          item_count: order.line_items?.length || 0,
+          line_items: (order.line_items || []).map((item) => ({
+            title: item.title,
+            variant_title: item.variant_title,
+            sku: item.sku,
+            quantity: item.quantity,
+            vendor: item.vendor,
+            price: item.price
+          }))
+        };
+      })
+    );
 
     return res.status(200).json({ orders });
   } catch (error) {

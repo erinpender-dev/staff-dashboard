@@ -29,25 +29,36 @@ function normalize(body = {}) {
   };
 }
 
-const BLOB_BASE = process.env.BLOB_READ_WRITE_TOKEN
-  ? "https://blob.vercel-storage.com"
-  : "";
-
 function getPath(orderId) {
   return `order-details/${orderId}.json`;
 }
 
-async function readDetails(orderId) {
-  try {
-    const url = `${BLOB_BASE}/${getPath(orderId)}`;
-    const res = await fetch(url);
+async function readPrivateJson(orderId) {
+  const baseUrl = process.env.BLOB_BASE_URL;
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
 
-    if (!res.ok) return null;
+  if (!baseUrl || !token) {
+    throw new Error("Missing BLOB_BASE_URL or BLOB_READ_WRITE_TOKEN");
+  }
 
-    return await res.json();
-  } catch {
+  const url = `${baseUrl}/${getPath(orderId)}`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (response.status === 404) {
     return null;
   }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Blob read failed: ${text}`);
+  }
+
+  return await response.json();
 }
 
 export default async function handler(req, res) {
@@ -68,7 +79,10 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      const existing = await readDetails(orderId);
+      const existing = await readPrivateJson(orderId).catch((error) => {
+        if (String(error.message || "").includes("404")) return null;
+        throw error;
+      });
 
       return res.status(200).json({
         order_id: String(orderId),
@@ -78,17 +92,25 @@ export default async function handler(req, res) {
 
     if (req.method === "POST") {
       const payload = normalize(req.body || {});
-      const existing = (await readDetails(orderId)) || {};
+      let existing = null;
+
+      try {
+        existing = await readPrivateJson(orderId);
+      } catch (error) {
+        if (!String(error.message || "").includes("404")) {
+          throw error;
+        }
+      }
 
       const merged = {
-        ...existing,
+        ...(existing || {}),
         ...payload,
         order_id: String(orderId)
       };
 
       await put(getPath(orderId), JSON.stringify(merged, null, 2), {
-        access: "public",
-        contentType: "application/json"
+        contentType: "application/json",
+        allowOverwrite: true
       });
 
       return res.status(200).json({
