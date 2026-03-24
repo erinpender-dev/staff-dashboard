@@ -109,9 +109,10 @@ export default async function handler(req, res) {
       };
 
       await put(getPath(orderId), JSON.stringify(merged, null, 2), {
-        contentType: "application/json",
-        allowOverwrite: true
-      });
+  access: "private",
+  contentType: "application/json",
+  allowOverwrite: true
+});
 
       return res.status(200).json({
         success: true,
