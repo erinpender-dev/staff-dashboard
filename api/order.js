@@ -12,6 +12,10 @@ function clean(value) {
   return String(value).trim();
 }
 
+function unique(values = []) {
+  return [...new Set(values.filter(Boolean))];
+}
+
 function getPath(orderId) {
   return `order-details/${orderId}.json`;
 }
@@ -42,6 +46,123 @@ async function readPrivateJson(orderId) {
   }
 
   return await response.json();
+}
+
+async function shopifyGraphQL(shop, token, query, variables = {}) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Shopify GraphQL error: ${text}`);
+  }
+
+  const data = JSON.parse(text);
+
+  if (data.errors?.length) {
+    throw new Error(`Shopify GraphQL errors: ${JSON.stringify(data.errors)}`);
+  }
+
+  return data.data;
+}
+
+function parseMetaobjectFields(metaobject) {
+  if (!metaobject?.fields) return {};
+
+  return metaobject.fields.reduce((acc, field) => {
+    acc[field.key] = field.value || "";
+    return acc;
+  }, {});
+}
+
+async function fetchOrderContacts(shop, token, orderId) {
+  try {
+    const gid = `gid://shopify/Order/${orderId}`;
+
+    const query = `
+      query OrderContactInfo($id: ID!) {
+        order(id: $id) {
+          id
+          metafield(namespace: "custom", key: "client_contact_information") {
+            value
+            type
+            reference {
+              ... on Metaobject {
+                id
+                fields {
+                  key
+                  value
+                }
+              }
+            }
+            references(first: 10) {
+              nodes {
+                ... on Metaobject {
+                  id
+                  fields {
+                    key
+                    value
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyGraphQL(shop, token, query, { id: gid });
+    const metafield = data?.order?.metafield;
+
+    if (!metafield) {
+      return {
+        client_contacts: [],
+        organizations: []
+      };
+    }
+
+    let nodes = [];
+
+    if (metafield.references?.nodes?.length) {
+      nodes = metafield.references.nodes;
+    } else if (metafield.reference) {
+      nodes = [metafield.reference];
+    }
+
+    const contacts = nodes.map((node) => {
+      const fields = parseMetaobjectFields(node);
+
+      return {
+        name: clean(fields.name),
+        phone: clean(fields.phone),
+        email: clean(fields.email),
+        organization: clean(fields.organization)
+      };
+    }).filter((contact) => {
+      return contact.name || contact.phone || contact.email || contact.organization;
+    });
+
+    const organizations = unique(
+      contacts.map((contact) => clean(contact.organization))
+    );
+
+    return {
+      client_contacts: contacts,
+      organizations
+    };
+  } catch (error) {
+    return {
+      client_contacts: [],
+      organizations: []
+    };
+  }
 }
 
 export default async function handler(req, res) {
@@ -97,6 +218,7 @@ export default async function handler(req, res) {
     }
 
     const saved = (await readPrivateJson(orderId)) || {};
+    const contactData = await fetchOrderContacts(shop, token, orderId);
 
     const shopifyCustomerName =
       order.customer
@@ -130,6 +252,8 @@ export default async function handler(req, res) {
         );
       })?.value || "";
 
+    const primaryContact = contactData.client_contacts[0] || {};
+
     const merged = {
       id: order.id,
       name: order.name,
@@ -154,9 +278,21 @@ export default async function handler(req, res) {
       custom_customer_email: clean(saved.custom_customer_email),
       custom_customer_phone: clean(saved.custom_customer_phone),
 
-      customer_name: clean(saved.custom_customer_name) || clean(shopifyCustomerName),
-      customer_email: clean(saved.custom_customer_email) || clean(shopifyCustomerEmail),
-      customer_phone: clean(saved.custom_customer_phone) || clean(shopifyCustomerPhone),
+      customer_name:
+        clean(saved.custom_customer_name) ||
+        clean(primaryContact.name) ||
+        clean(shopifyCustomerName),
+
+      customer_email:
+        clean(saved.custom_customer_email) ||
+        clean(primaryContact.email) ||
+        clean(shopifyCustomerEmail),
+
+      customer_phone:
+        clean(saved.custom_customer_phone) ||
+        clean(primaryContact.phone) ||
+        clean(shopifyCustomerPhone),
+
       prepared_for: clean(saved.prepared_for) || clean(shopifyPreparedFor),
 
       school: clean(saved.school),
@@ -164,7 +300,14 @@ export default async function handler(req, res) {
       delivery_notes: clean(saved.delivery_notes),
       staff_notes: clean(saved.staff_notes),
       production_notes: clean(saved.production_notes),
+
+      internal_order_status: clean(saved.internal_order_status),
+      internal_payment_status: clean(saved.internal_payment_status),
+
       custom_updated_at: clean(saved.updated_at),
+
+      client_contacts: contactData.client_contacts,
+      organizations: contactData.organizations,
 
       shipping_address: order.shipping_address || null,
       billing_address: order.billing_address || null,
