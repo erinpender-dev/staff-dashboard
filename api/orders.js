@@ -93,6 +93,127 @@ function getShopifyCustomerPhone(order) {
   );
 }
 
+function parseJsonSafe(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (Array.isArray(value) || typeof value === "object") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function normalizeContact(contact = {}) {
+  return {
+    name: clean(contact.name),
+    email: clean(contact.email),
+    phone: clean(contact.phone),
+    organization: clean(contact.organization),
+    title: clean(contact.title),
+    role: clean(contact.role)
+  };
+}
+
+function getClientContacts(saved) {
+  const possibleSources = [
+    saved?.client_contacts,
+    saved?.contact_cards,
+    saved?.contacts,
+    saved?.custom_contacts,
+    saved?.metafield_contacts,
+    saved?.dashboard_contacts,
+    saved?.order_contacts,
+    saved?.contact_metafield,
+    saved?.metafields?.client_contacts,
+    saved?.metafields?.contact_cards,
+    saved?.metafields?.contacts,
+    saved?.custom_data?.client_contacts,
+    saved?.custom_data?.contact_cards,
+    saved?.dashboard_data?.client_contacts,
+    saved?.dashboard_data?.contact_cards
+  ];
+
+  for (const source of possibleSources) {
+    const parsed = parseJsonSafe(source, null);
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.map(normalizeContact).filter((contact) => {
+        return (
+          contact.name ||
+          contact.email ||
+          contact.phone ||
+          contact.organization ||
+          contact.title ||
+          contact.role
+        );
+      });
+    }
+  }
+
+  return [];
+}
+
+function getOrganizations(saved, contacts) {
+  const possibleSources = [
+    saved?.organizations,
+    saved?.organization,
+    saved?.orgs,
+    saved?.metafields?.organizations,
+    saved?.custom_data?.organizations,
+    saved?.dashboard_data?.organizations
+  ];
+
+  for (const source of possibleSources) {
+    const parsed = parseJsonSafe(source, null);
+
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.map((value) => clean(value)).filter(Boolean);
+    }
+
+    if (typeof parsed === "string" && clean(parsed)) {
+      return [clean(parsed)];
+    }
+  }
+
+  const fromContacts = contacts
+    .map((contact) => clean(contact.organization))
+    .filter(Boolean);
+
+  return [...new Set(fromContacts)];
+}
+
+function getReference(saved) {
+  return clean(
+    saved?.reference ||
+      saved?.job_reference ||
+      saved?.project_reference ||
+      ""
+  );
+}
+
+function getPaymentReceivedType(saved) {
+  return clean(saved?.payment_received_type);
+}
+
+function getPaymentReceivedAmount(saved) {
+  return clean(saved?.payment_received_amount);
+}
+
+function getPaymentReceivedCheckNumber(saved) {
+  return clean(saved?.payment_received_check_number);
+}
+
+function getPartialPayments(saved) {
+  const parsed = parseJsonSafe(saved?.partial_payments, []);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed.map((payment) => ({
+    type: clean(payment?.type),
+    amount: clean(payment?.amount),
+    check_number: clean(payment?.check_number)
+  })).filter((payment) => payment.type || payment.amount || payment.check_number);
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
 
@@ -175,6 +296,10 @@ export default async function handler(req, res) {
         const shopifyCustomerPhone = getShopifyCustomerPhone(order);
         const shopifyPreparedFor = getPreparedFor(order);
 
+        const clientContacts = getClientContacts(saved);
+        const organizations = getOrganizations(saved, clientContacts);
+        const partialPayments = getPartialPayments(saved);
+
         return {
           id: order.id,
           name: order.name,
@@ -199,15 +324,16 @@ export default async function handler(req, res) {
           custom_customer_phone: clean(saved?.custom_customer_phone),
 
           customer_name:
-            clean(saved?.custom_customer_name) || shopifyCustomerName,
+            clean(saved?.custom_customer_name) || "",
           customer_email:
-            clean(saved?.custom_customer_email) || shopifyCustomerEmail,
+            clean(saved?.custom_customer_email) || "",
           customer_phone:
-            clean(saved?.custom_customer_phone) || shopifyCustomerPhone,
+            clean(saved?.custom_customer_phone) || "",
 
           prepared_for:
-            clean(saved?.prepared_for) || shopifyPreparedFor,
+            clean(saved?.prepared_for) || shopifyPreparedFor || shopifyCustomerName,
 
+          reference: getReference(saved),
           school: clean(saved?.school),
           sent_with: clean(saved?.sent_with),
           delivery_notes: clean(saved?.delivery_notes),
@@ -217,10 +343,18 @@ export default async function handler(req, res) {
           internal_order_status: clean(saved?.internal_order_status),
           internal_payment_status: clean(saved?.internal_payment_status),
 
-          client_contacts: [],
-          organizations: [],
+          payment_received_type: getPaymentReceivedType(saved),
+          payment_received_amount: getPaymentReceivedAmount(saved),
+          payment_received_check_number: getPaymentReceivedCheckNumber(saved),
+          partial_payments: partialPayments,
 
-          item_count: Array.isArray(order.line_items) ? order.line_items.length : 0,
+          client_contacts: clientContacts,
+          organizations,
+
+          item_count: Array.isArray(order.line_items)
+            ? order.line_items.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+            : 0,
+
           line_items: (order.line_items || []).map((item) => ({
             id: item.id,
             name: clean(item.name || item.title),
