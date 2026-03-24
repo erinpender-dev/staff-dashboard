@@ -184,11 +184,12 @@ function getOrganizations(saved, contacts) {
   return [...new Set(fromContacts)];
 }
 
-function getReference(saved) {
+function getReference(saved, shopifyReference) {
   return clean(
     saved?.reference ||
       saved?.job_reference ||
       saved?.project_reference ||
+      shopifyReference ||
       ""
   );
 }
@@ -307,13 +308,18 @@ async function shopifyGraphQL(shop, token, query, variables = {}) {
   return json.data;
 }
 
-async function fetchClientContactMetafield(shop, token, orderId) {
+async function fetchOrderMetafields(shop, token, orderId) {
   const query = `
-    query GetOrderClientContactInformation($id: ID!) {
+    query GetOrderMetafields($id: ID!) {
       node(id: $id) {
         ... on Order {
           id
-          metafield(namespace: "custom", key: "client_contact_information") {
+          clientContactInformation: metafield(namespace: "custom", key: "client_contact_information") {
+            id
+            type
+            value
+          }
+          reference: metafield(namespace: "custom", key: "reference") {
             id
             type
             value
@@ -330,7 +336,10 @@ async function fetchClientContactMetafield(shop, token, orderId) {
     { id: `gid://shopify/Order/${orderId}` }
   );
 
-  return data?.node?.metafield || null;
+  return {
+    clientContactInformation: data?.node?.clientContactInformation || null,
+    reference: data?.node?.reference || null
+  };
 }
 
 async function fetchMetaobjectsByIds(shop, token, ids) {
@@ -438,7 +447,8 @@ export default async function handler(req, res) {
     const orders = await Promise.all(
       rawOrders.map(async (order) => {
         let saved = null;
-        let metafield = null;
+        let clientContactMetafield = null;
+        let referenceMetafield = null;
         let metafieldError = "";
         let metafieldContacts = [];
         let metafieldMetaobjectIds = [];
@@ -451,15 +461,19 @@ export default async function handler(req, res) {
         }
 
         try {
-          metafield = await fetchClientContactMetafield(shop, token, order.id);
-          metafieldMetaobjectIds = parseMetaobjectIdsFromMetafieldValue(metafield?.value);
+          const metafields = await fetchOrderMetafields(shop, token, order.id);
+          clientContactMetafield = metafields.clientContactInformation;
+          referenceMetafield = metafields.reference;
+
+          metafieldMetaobjectIds = parseMetaobjectIdsFromMetafieldValue(clientContactMetafield?.value);
           fetchedMetaobjects = await fetchMetaobjectsByIds(shop, token, metafieldMetaobjectIds);
           metafieldContacts = fetchedMetaobjects
             .map((metaobject) => parseClientContactMetaobject(metaobject))
             .filter(Boolean);
         } catch (error) {
           metafieldError = error.message || String(error);
-          metafield = null;
+          clientContactMetafield = null;
+          referenceMetafield = null;
           metafieldContacts = [];
         }
 
@@ -467,6 +481,7 @@ export default async function handler(req, res) {
         const shopifyCustomerEmail = getShopifyCustomerEmail(order);
         const shopifyCustomerPhone = getShopifyCustomerPhone(order);
         const shopifyPreparedFor = getPreparedFor(order);
+        const shopifyReference = clean(referenceMetafield?.value);
 
         const savedContacts = getClientContacts(saved);
         const clientContacts = metafieldContacts.length ? metafieldContacts : savedContacts;
@@ -503,7 +518,8 @@ export default async function handler(req, res) {
           prepared_for:
             clean(saved?.prepared_for) || shopifyPreparedFor || shopifyCustomerName,
 
-          reference: getReference(saved),
+          reference: getReference(saved, shopifyReference),
+          shopify_reference: shopifyReference,
           school: clean(saved?.school),
           sent_with: clean(saved?.sent_with),
           delivery_notes: clean(saved?.delivery_notes),
@@ -540,9 +556,12 @@ export default async function handler(req, res) {
 
         if (debugMode) {
           result.metafield_debug = {
-            has_metafield: !!metafield,
-            metafield_type: metafield?.type || "",
-            metafield_value: metafield?.value || "",
+            has_client_contact_metafield: !!clientContactMetafield,
+            client_contact_metafield_type: clientContactMetafield?.type || "",
+            client_contact_metafield_value: clientContactMetafield?.value || "",
+            has_reference_metafield: !!referenceMetafield,
+            reference_metafield_type: referenceMetafield?.type || "",
+            reference_metafield_value: referenceMetafield?.value || "",
             metaobject_ids: metafieldMetaobjectIds,
             fetched_metaobjects_count: fetchedMetaobjects.length,
             parsed_contacts_count: metafieldContacts.length,
