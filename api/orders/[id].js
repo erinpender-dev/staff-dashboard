@@ -24,40 +24,22 @@ async function shopifyFetch(url, token, options = {}) {
 function getManualPlaceholderConfig(schoolTag) {
   switch (String(schoolTag || "").toLowerCase()) {
     case "sta":
-      return {
-        name: "STA Manual Order",
-        email: "sta-manual-order@bkreativeworks.local"
-      };
+      return { name: "STA Manual Order", email: "sta-manual-order@bkreativeworks.local" };
     case "sjs":
-      return {
-        name: "SJS Manual Order",
-        email: "sjs-manual-order@bkreativeworks.local"
-      };
+      return { name: "SJS Manual Order", email: "sjs-manual-order@bkreativeworks.local" };
     case "slu":
-      return {
-        name: "SLU Manual Order",
-        email: "slu-manual-order@bkreativeworks.local"
-      };
+      return { name: "SLU Manual Order", email: "slu-manual-order@bkreativeworks.local" };
     case "rts":
-      return {
-        name: "RTS Manual Order",
-        email: "rts-manual-order@bkreativeworks.local"
-      };
+      return { name: "RTS Manual Order", email: "rts-manual-order@bkreativeworks.local" };
     default:
-      return {
-        name: "Misc Manual Order",
-        email: "misc-manual-order@bkreativeworks.local"
-      };
+      return { name: "Misc Manual Order", email: "misc-manual-order@bkreativeworks.local" };
   }
 }
 
 async function findOrCreatePlaceholderCustomer(shop, token, schoolTag) {
   const placeholder = getManualPlaceholderConfig(schoolTag);
 
-  const searchUrl = `https://${shop}/admin/api/2025-10/customers/search.json?query=${encodeURIComponent(
-    `email:${placeholder.email}`
-  )}`;
-
+  const searchUrl = `https://${shop}/admin/api/2025-10/customers/search.json?query=${encodeURIComponent(`email:${placeholder.email}`)}`;
   const searchData = await shopifyFetch(searchUrl, token);
 
   if (Array.isArray(searchData.customers) && searchData.customers.length) {
@@ -86,9 +68,7 @@ async function findOrCreatePlaceholderCustomer(shop, token, schoolTag) {
 
 function toNoteAttributesObject(noteAttributes) {
   if (!Array.isArray(noteAttributes)) return {};
-  return Object.fromEntries(
-    noteAttributes.map((item) => [item.name, item.value])
-  );
+  return Object.fromEntries(noteAttributes.map((item) => [item.name, item.value]));
 }
 
 function toNoteAttributesArray(obj) {
@@ -100,17 +80,10 @@ function toNoteAttributesArray(obj) {
 
 function splitName(fullName) {
   const clean = String(fullName || "").trim();
-  if (!clean) {
-    return { first_name: "", last_name: "" };
-  }
+  if (!clean) return { first_name: "", last_name: "" };
   const parts = clean.split(/\s+/);
-  if (parts.length === 1) {
-    return { first_name: parts[0], last_name: "" };
-  }
-  return {
-    first_name: parts.shift(),
-    last_name: parts.join(" ")
-  };
+  if (parts.length === 1) return { first_name: parts[0], last_name: "" };
+  return { first_name: parts.shift(), last_name: parts.join(" ") };
 }
 
 function normalizeTags(tags) {
@@ -134,20 +107,33 @@ function normalizeOrder(order) {
         .filter(Boolean);
 
   const shippingLines = Array.isArray(order.shipping_lines) ? order.shipping_lines : [];
-  const hasLocalPickup = shippingLines.some((line) => {
-    const title = String(line?.title || "").toLowerCase();
-    const code = String(line?.code || "").toLowerCase();
-    return title.includes("pickup") || code.includes("pickup");
-  });
+  const shippingTitle = shippingLines.map((line) => String(line?.title || "")).join(" ").toLowerCase();
+  const shippingCode = shippingLines.map((line) => String(line?.code || "")).join(" ").toLowerCase();
+  const hasLocalPickup =
+    shippingTitle.includes("pickup") ||
+    shippingCode.includes("pickup") ||
+    shippingTitle.includes("store") ||
+    shippingCode.includes("store");
+
+  let pickupStatus = String(
+    noteAttributes.bk_pickup_status ||
+    noteAttributes.pickup_status ||
+    ""
+  ).toLowerCase();
+
+  if (!pickupStatus) {
+    if (String(order.fulfillment_status || "").toLowerCase() === "fulfilled") {
+      pickupStatus = "picked_up";
+    } else {
+      pickupStatus = "not_ready";
+    }
+  }
 
   return {
     ...order,
     tags,
     delivery_method: hasLocalPickup ? "pickup" : "ship",
-    pickup_status:
-      noteAttributes.bk_pickup_status ||
-      noteAttributes.pickup_status ||
-      "",
+    pickup_status: pickupStatus,
     metafields: {
       school_tag: noteAttributes.school_tag || "",
       student_info: noteAttributes.student_info || "",
@@ -155,15 +141,11 @@ function normalizeOrder(order) {
       sent_with: noteAttributes.sent_with || "",
       delivery_location: noteAttributes.delivery_location || "",
       delivery_complete: noteAttributes.delivery_complete || "false",
-      pickup_status:
-        noteAttributes.bk_pickup_status ||
-        noteAttributes.pickup_status ||
-        "",
+      pickup_status: pickupStatus,
       display_customer_name: noteAttributes.display_customer_name || "",
       display_customer_email: noteAttributes.display_customer_email || "",
       display_customer_phone: noteAttributes.display_customer_phone || ""
-    },
-    normalized_note_attributes: noteAttributes
+    }
   };
 }
 
@@ -181,9 +163,7 @@ export default async function handler(req, res) {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
   if (!shop || !token) {
-    return res.status(500).json({
-      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
-    });
+    return res.status(500).json({ error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN" });
   }
 
   const orderId = req.query.id;
@@ -193,12 +173,11 @@ export default async function handler(req, res) {
   }
 
   try {
+    const getUrl = `https://${shop}/admin/api/2025-10/orders/${orderId}.json?status=any`;
+
     if (req.method === "GET") {
-      const getUrl = `https://${shop}/admin/api/2025-10/orders/${orderId}.json?status=any`;
       const data = await shopifyFetch(getUrl, token);
-      return res.status(200).json({
-        order: normalizeOrder(data.order)
-      });
+      return res.status(200).json({ order: normalizeOrder(data.order) });
     }
 
     if (req.method !== "PUT") {
@@ -206,16 +185,13 @@ export default async function handler(req, res) {
     }
 
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
-
     const sourceType = String(body.source_type || "web").toLowerCase();
     const tags = normalizeTags(body.tags);
     const metafields = body.metafields || {};
     const schoolTag = String(metafields.school_tag || "misc").toLowerCase();
 
-    const getUrl = `https://${shop}/admin/api/2025-10/orders/${orderId}.json?status=any`;
     const existingData = await shopifyFetch(getUrl, token);
     const existingOrder = existingData.order;
-
     const existingNoteAttributes = toNoteAttributesObject(existingOrder.note_attributes);
 
     const mergedNoteAttributes = {
@@ -237,10 +213,6 @@ export default async function handler(req, res) {
       }
     };
 
-    if (typeof body.financial_status === "string" && body.financial_status.trim()) {
-      updatePayload.order.financial_status = body.financial_status.trim();
-    }
-
     if (sourceType === "manual") {
       const manualCustomer = body.manual_customer || {};
       const placeholderCustomer = await findOrCreatePlaceholderCustomer(shop, token, schoolTag);
@@ -259,7 +231,7 @@ export default async function handler(req, res) {
       const webCustomer = body.web_customer || {};
       const nameParts = splitName(
         webCustomer.customer_name ||
-          `${existingOrder.customer?.first_name || ""} ${existingOrder.customer?.last_name || ""}`.trim()
+        `${existingOrder.customer?.first_name || ""} ${existingOrder.customer?.last_name || ""}`.trim()
       );
 
       if (existingOrder.customer?.id) {
@@ -288,7 +260,7 @@ export default async function handler(req, res) {
     }
 
     const updateUrl = `https://${shop}/admin/api/2025-10/orders/${orderId}.json`;
-    const updatedData = await shopifyFetch(updateUrl, token, {
+    await shopifyFetch(updateUrl, token, {
       method: "PUT",
       body: JSON.stringify(updatePayload)
     });
