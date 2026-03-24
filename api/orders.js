@@ -1,234 +1,187 @@
-async function shopifyGraphQL(shop, token, query, variables = {}) {
-  const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": token,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ query, variables })
-  });
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok || data.errors) {
-    throw new Error(JSON.stringify(data.errors || data || {}));
-  }
-
-  return data.data;
-}
-
-function mapDisplayFulfillmentStatus(displayStatus, fallbackFulfillmentStatus, currentPickupStatus) {
-  const normalized = String(displayStatus || "").toUpperCase();
-
-  if (normalized === "READY_FOR_PICKUP") {
-    return {
-      fulfillment_status: "unfulfilled",
-      pickup_status: "ready_for_pickup",
-      display_fulfillment_status: normalized
-    };
-  }
-
-  if (normalized === "FULFILLED") {
-    return {
-      fulfillment_status: "fulfilled",
-      pickup_status: currentPickupStatus || "picked_up",
-      display_fulfillment_status: normalized
-    };
-  }
-
-  if (normalized === "PARTIALLY_FULFILLED") {
-    return {
-      fulfillment_status: "partial",
-      pickup_status: currentPickupStatus || "not_ready",
-      display_fulfillment_status: normalized
-    };
-  }
-
-  return {
-    fulfillment_status: fallbackFulfillmentStatus,
-    pickup_status: currentPickupStatus || "not_ready",
-    display_fulfillment_status: normalized || ""
-  };
-}
-
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.setHeader("Pragma", "no-cache");
-  res.setHeader("Expires", "0");
-  res.setHeader("Surrogate-Control", "no-store");
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  if (req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
 
   const shop = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
   if (!shop || !token) {
     return res.status(500).json({
-      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
+      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN",
     });
   }
 
   try {
-    const status = req.query.status || "any";
-    const fulfillmentStatus = req.query.fulfillment_status || "";
+    const limit = Number(req.query.limit || 50);
+    const status = req.query.status || "open";
     const financialStatus = req.query.financial_status || "";
-    const limit = req.query.limit || "100";
+    const fulfillmentStatus = req.query.fulfillment_status || "";
+    const search = (req.query.search || "").trim();
 
-    let url = `https://${shop}/admin/api/2025-10/orders.json?status=${encodeURIComponent(status)}&limit=${encodeURIComponent(limit)}&order=created_at%20desc`;
+    const queryParts = [];
 
-    if (fulfillmentStatus && fulfillmentStatus !== "needs_fulfillment") {
-      url += `&fulfillment_status=${encodeURIComponent(fulfillmentStatus)}`;
+    if (status && status !== "any") queryParts.push(`status:${status}`);
+    if (financialStatus) queryParts.push(`financial_status:${financialStatus}`);
+
+    // These work for broad filtering; final filtering also happens below.
+    if (fulfillmentStatus === "unfulfilled") queryParts.push(`fulfillment_status:unfulfilled`);
+    if (fulfillmentStatus === "fulfilled") queryParts.push(`fulfillment_status:fulfilled`);
+    if (fulfillmentStatus === "partial") queryParts.push(`fulfillment_status:partial`);
+
+    if (search) {
+      queryParts.push(`(${[
+        `name:${search}*`,
+        `email:${search}*`,
+        `tag:${search}*`,
+        `note:${search}*`,
+      ].join(" OR ")})`);
     }
 
-    if (financialStatus) {
-      url += `&financial_status=${encodeURIComponent(financialStatus)}`;
-    }
+    const searchQuery = queryParts.join(" AND ");
 
-    const response = await fetch(url, {
-      headers: {
-        "X-Shopify-Access-Token": token,
-        "Content-Type": "application/json",
-        "Cache-Control": "no-cache"
-      }
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: data?.errors || data?.error || "Failed to load Shopify orders",
-        raw: data
-      });
-    }
-
-    let orders = Array.isArray(data.orders) ? data.orders.map(normalizeOrder) : [];
-
-    // Safe GraphQL overlay for Shopify display fulfillment status
-    try {
-      const gqlQuery = `
-        query GetOrderStatuses($first: Int!) {
-          orders(first: $first, reverse: true, sortKey: CREATED_AT) {
-            edges {
-              node {
-                legacyResourceId
-                displayFulfillmentStatus
+    const graphqlQuery = `
+      query GetOrders($first: Int!, $query: String) {
+        orders(first: $first, sortKey: CREATED_AT, reverse: true, query: $query) {
+          edges {
+            node {
+              id
+              legacyResourceId
+              name
+              createdAt
+              cancelledAt
+              closed
+              tags
+              note
+              displayFinancialStatus
+              displayFulfillmentStatus
+              totalPriceSet {
+                shopMoney {
+                  amount
+                  currencyCode
+                }
+              }
+              customer {
+                id
+                firstName
+                lastName
+                displayName
+                email
+                phone
+              }
+              shippingAddress {
+                name
+                address1
+                address2
+                city
+                province
+                zip
+              }
+              noteAttributes {
+                name
+                value
+              }
+              shippingLine {
+                title
+              }
+              lineItems(first: 50) {
+                edges {
+                  node {
+                    title
+                    quantity
+                    sku
+                    variant {
+                      id
+                      title
+                    }
+                  }
+                }
               }
             }
           }
         }
-      `;
+      }
+    `;
 
-      const gqlData = await shopifyGraphQL(shop, token, gqlQuery, {
-        first: Math.min(Number(limit || 100), 100)
+    const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token,
+      },
+      body: JSON.stringify({
+        query: graphqlQuery,
+        variables: {
+          first: limit,
+          query: searchQuery || null,
+        },
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.errors) {
+      return res.status(500).json({
+        error: "Shopify GraphQL error",
+        details: data.errors || data,
       });
-
-      const statusMap = new Map(
-        (gqlData?.orders?.edges || []).map((edge) => [
-          String(edge.node.legacyResourceId),
-          String(edge.node.displayFulfillmentStatus || "")
-        ])
-      );
-
-      orders = orders.map((order) => {
-        const displayStatus = statusMap.get(String(order.id)) || "";
-        const mapped = mapDisplayFulfillmentStatus(
-          displayStatus,
-          String(order.fulfillment_status || "").toLowerCase(),
-          String(order.pickup_status || "").toLowerCase()
-        );
-
-        return {
-          ...order,
-          fulfillment_status: mapped.fulfillment_status,
-          pickup_status: mapped.pickup_status,
-          display_fulfillment_status: mapped.display_fulfillment_status,
-          metafields: {
-            ...(order.metafields || {}),
-            pickup_status: mapped.pickup_status
-          }
-        };
-      });
-    } catch (overlayError) {
-      console.error("GraphQL status overlay failed:", overlayError.message);
     }
 
-    if (fulfillmentStatus === "needs_fulfillment") {
-      orders = orders.filter((order) => String(order.fulfillment_status || "").toLowerCase() !== "fulfilled");
+    let orders = data.data.orders.edges.map(({ node }) => {
+      const amount = node.totalPriceSet?.shopMoney?.amount || "0.00";
+      const currency = node.totalPriceSet?.shopMoney?.currencyCode || "USD";
+      const customerName =
+        node.customer?.displayName ||
+        [node.customer?.firstName, node.customer?.lastName].filter(Boolean).join(" ") ||
+        node.shippingAddress?.name ||
+        "No customer";
+
+      const lineItems = node.lineItems.edges.map(({ node: item }) => ({
+        title: item.title,
+        quantity: item.quantity,
+        sku: item.sku || "",
+        variant_title: item.variant?.title || "",
+        variant_id: item.variant?.id || null,
+      }));
+
+      return {
+        id: node.legacyResourceId,
+        admin_graphql_api_id: node.id,
+        order_number: node.name,
+        name: node.name,
+        created_at: node.createdAt,
+        cancelled_at: node.cancelledAt,
+        closed: node.closed,
+        tags: node.tags || [],
+        note: node.note || "",
+        financial_status: node.displayFinancialStatus || "",
+        fulfillment_status: node.displayFulfillmentStatus || "",
+        total_price: amount,
+        currency,
+        customer: {
+          name: customerName,
+          email: node.customer?.email || "",
+          phone: node.customer?.phone || "",
+        },
+        shipping_address: node.shippingAddress || null,
+        shipping_line: node.shippingLine?.title || "",
+        note_attributes: node.noteAttributes || [],
+        line_items: lineItems,
+      };
+    });
+
+    // Extra frontend-friendly filtering for statuses Shopify shows in admin
+    if (fulfillmentStatus) {
+      const wanted = fulfillmentStatus.toLowerCase().replace(/_/g, " ");
+      orders = orders.filter((order) => {
+        const current = (order.fulfillment_status || "").toLowerCase().replace(/_/g, " ");
+        return current === wanted;
+      });
     }
 
     return res.status(200).json({ orders });
   } catch (error) {
     return res.status(500).json({
-      error: error.message || "Unexpected server error"
+      error: "Failed to load orders",
+      details: error.message,
     });
   }
-}
-
-function normalizeOrder(order) {
-  const noteAttributes = Array.isArray(order.note_attributes)
-    ? Object.fromEntries(order.note_attributes.map((item) => [item.name, item.value]))
-    : {};
-
-  const tags = Array.isArray(order.tags)
-    ? order.tags
-    : String(order.tags || "")
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
-
-  const shippingLines = Array.isArray(order.shipping_lines) ? order.shipping_lines : [];
-  const shippingTitle = shippingLines.map((line) => String(line?.title || "")).join(" ").toLowerCase();
-  const shippingCode = shippingLines.map((line) => String(line?.code || "")).join(" ").toLowerCase();
-
-  const hasLocalPickup =
-    shippingTitle.includes("pickup") ||
-    shippingCode.includes("pickup") ||
-    shippingTitle.includes("store") ||
-    shippingCode.includes("store");
-
-  const deliveryMethod = hasLocalPickup ? "pickup" : "ship";
-
-  let pickupStatus = String(
-    noteAttributes.bk_pickup_status ||
-    noteAttributes.pickup_status ||
-    ""
-  ).toLowerCase();
-
-  if (!pickupStatus) {
-    if (String(order.fulfillment_status || "").toLowerCase() === "fulfilled") {
-      pickupStatus = "picked_up";
-    } else {
-      pickupStatus = "not_ready";
-    }
-  }
-
-  return {
-    ...order,
-    tags,
-    delivery_method: deliveryMethod,
-    pickup_status: pickupStatus,
-    display_fulfillment_status: "",
-    metafields: {
-      school_tag: noteAttributes.school_tag || "",
-      student_info: noteAttributes.student_info || "",
-      internal_notes: noteAttributes.internal_notes || "",
-      sent_with: noteAttributes.sent_with || "",
-      delivery_location: noteAttributes.delivery_location || "",
-      delivery_complete: noteAttributes.delivery_complete || "false",
-      pickup_status: pickupStatus,
-      display_customer_name: noteAttributes.display_customer_name || "",
-      display_customer_email: noteAttributes.display_customer_email || "",
-      display_customer_phone: noteAttributes.display_customer_phone || ""
-    },
-    normalized_note_attributes: noteAttributes
-  };
 }
