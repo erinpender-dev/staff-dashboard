@@ -123,11 +123,14 @@ async function readPrivateJson(orderId) {
 
   const url = `${baseUrl}/${getPath(orderId)}`;
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
-  });
+  const response = await fetch(`${url}?ts=${Date.now()}`, {
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Cache-Control": "no-cache"
+  },
+  cache: "no-store"
+});
+
 
   if (response.status === 404) {
     return null;
