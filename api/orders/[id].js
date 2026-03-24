@@ -21,25 +21,64 @@ async function shopifyFetch(url, token, options = {}) {
   return data;
 }
 
+async function shopifyGraphQL(shop, token, query, variables = {}) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || data.errors) {
+    throw new Error(
+      JSON.stringify(data.errors || data || { error: "GraphQL request failed" })
+    );
+  }
+
+  return data.data;
+}
+
 function getManualPlaceholderConfig(schoolTag) {
   switch (String(schoolTag || "").toLowerCase()) {
     case "sta":
-      return { name: "STA Manual Order", email: "sta-manual-order@bkreativeworks.local" };
+      return {
+        name: "STA Manual Order",
+        email: "sta-manual-order@bkreativeworks.local"
+      };
     case "sjs":
-      return { name: "SJS Manual Order", email: "sjs-manual-order@bkreativeworks.local" };
+      return {
+        name: "SJS Manual Order",
+        email: "sjs-manual-order@bkreativeworks.local"
+      };
     case "slu":
-      return { name: "SLU Manual Order", email: "slu-manual-order@bkreativeworks.local" };
+      return {
+        name: "SLU Manual Order",
+        email: "slu-manual-order@bkreativeworks.local"
+      };
     case "rts":
-      return { name: "RTS Manual Order", email: "rts-manual-order@bkreativeworks.local" };
+      return {
+        name: "RTS Manual Order",
+        email: "rts-manual-order@bkreativeworks.local"
+      };
     default:
-      return { name: "Misc Manual Order", email: "misc-manual-order@bkreativeworks.local" };
+      return {
+        name: "Misc Manual Order",
+        email: "misc-manual-order@bkreativeworks.local"
+      };
   }
 }
 
 async function findOrCreatePlaceholderCustomer(shop, token, schoolTag) {
   const placeholder = getManualPlaceholderConfig(schoolTag);
 
-  const searchUrl = `https://${shop}/admin/api/2025-10/customers/search.json?query=${encodeURIComponent(`email:${placeholder.email}`)}`;
+  const searchUrl = `https://${shop}/admin/api/2025-10/customers/search.json?query=${encodeURIComponent(
+    `email:${placeholder.email}`
+  )}`;
+
   const searchData = await shopifyFetch(searchUrl, token);
 
   if (Array.isArray(searchData.customers) && searchData.customers.length) {
@@ -68,7 +107,9 @@ async function findOrCreatePlaceholderCustomer(shop, token, schoolTag) {
 
 function toNoteAttributesObject(noteAttributes) {
   if (!Array.isArray(noteAttributes)) return {};
-  return Object.fromEntries(noteAttributes.map((item) => [item.name, item.value]));
+  return Object.fromEntries(
+    noteAttributes.map((item) => [item.name, item.value])
+  );
 }
 
 function toNoteAttributesArray(obj) {
@@ -80,10 +121,17 @@ function toNoteAttributesArray(obj) {
 
 function splitName(fullName) {
   const clean = String(fullName || "").trim();
-  if (!clean) return { first_name: "", last_name: "" };
+  if (!clean) {
+    return { first_name: "", last_name: "" };
+  }
   const parts = clean.split(/\s+/);
-  if (parts.length === 1) return { first_name: parts[0], last_name: "" };
-  return { first_name: parts.shift(), last_name: parts.join(" ") };
+  if (parts.length === 1) {
+    return { first_name: parts[0], last_name: "" };
+  }
+  return {
+    first_name: parts.shift(),
+    last_name: parts.join(" ")
+  };
 }
 
 function normalizeTags(tags) {
@@ -97,42 +145,86 @@ function normalizeTags(tags) {
     .filter(Boolean);
 }
 
-function normalizeOrder(order) {
-  const noteAttributes = toNoteAttributesObject(order.note_attributes);
-  const tags = Array.isArray(order.tags)
-    ? order.tags
-    : String(order.tags || "")
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
+function noteAttributesToObject(customAttributes) {
+  if (!Array.isArray(customAttributes)) return {};
+  return Object.fromEntries(
+    customAttributes.map((item) => [item.key, item.value])
+  );
+}
 
-  const shippingLines = Array.isArray(order.shipping_lines) ? order.shipping_lines : [];
-  const shippingTitle = shippingLines.map((line) => String(line?.title || "")).join(" ").toLowerCase();
-  const shippingCode = shippingLines.map((line) => String(line?.code || "")).join(" ").toLowerCase();
-  const hasLocalPickup =
-    shippingTitle.includes("pickup") ||
-    shippingCode.includes("pickup") ||
-    shippingTitle.includes("store") ||
-    shippingCode.includes("store");
+function normalizeOrderNode(node) {
+  const noteAttributes = noteAttributesToObject(node.customAttributes || []);
+  const tags = Array.isArray(node.tags) ? node.tags : [];
+  const shippingLineTitle = node.shippingLine?.title || "";
+  const deliveryMethod = shippingLineTitle.toLowerCase().includes("pickup") ? "pickup" : "ship";
+  const displayFulfillmentStatus = String(node.displayFulfillmentStatus || "").toUpperCase();
 
-  let pickupStatus = String(
-    noteAttributes.bk_pickup_status ||
-    noteAttributes.pickup_status ||
-    ""
-  ).toLowerCase();
+  let pickupStatus = String(noteAttributes.pickup_status || "").toLowerCase();
 
-  if (!pickupStatus) {
-    if (String(order.fulfillment_status || "").toLowerCase() === "fulfilled") {
-      pickupStatus = "picked_up";
-    } else {
-      pickupStatus = "not_ready";
-    }
+  if (displayFulfillmentStatus === "READY_FOR_PICKUP") {
+    pickupStatus = "ready_for_pickup";
+  } else if (displayFulfillmentStatus === "FULFILLED") {
+    pickupStatus = pickupStatus || "picked_up";
+  } else if (!pickupStatus) {
+    pickupStatus = "not_ready";
   }
 
+  let fulfillmentStatus = "unfulfilled";
+  if (displayFulfillmentStatus === "FULFILLED") {
+    fulfillmentStatus = "fulfilled";
+  } else if (displayFulfillmentStatus === "PARTIALLY_FULFILLED") {
+    fulfillmentStatus = "partial";
+  }
+
+  const customerName =
+    node.customer?.displayName ||
+    noteAttributes.display_customer_name ||
+    node.email ||
+    "No customer";
+
+  const email =
+    noteAttributes.display_customer_email ||
+    node.email ||
+    "";
+
+  const phone =
+    noteAttributes.display_customer_phone ||
+    node.customer?.phone ||
+    node.phone ||
+    "";
+
   return {
-    ...order,
+    id: String(node.legacyResourceId),
+    admin_graphql_api_id: node.id,
+    name: node.name,
+    created_at: node.createdAt,
+    updated_at: node.updatedAt,
+    source_name: node.sourceName === "shopify_draft_order" ? "shopify_draft_order" : "web",
+    financial_status: String(node.displayFinancialStatus || "").toLowerCase(),
+    fulfillment_status: fulfillmentStatus,
+    display_fulfillment_status: displayFulfillmentStatus,
+    total_price: node.currentTotalPriceSet?.shopMoney?.amount || "0.00",
+    current_total_price: node.currentTotalPriceSet?.shopMoney?.amount || "0.00",
+    currency: node.currentTotalPriceSet?.shopMoney?.currencyCode || "USD",
+    email,
+    phone,
     tags,
-    delivery_method: hasLocalPickup ? "pickup" : "ship",
+    customer: {
+      first_name: customerName,
+      last_name: "",
+      phone
+    },
+    line_items: (node.lineItems?.edges || []).map(({ node: item }) => ({
+      id: String(item.id),
+      title: item.title,
+      quantity: item.quantity,
+      sku: item.sku || "",
+      variant_title: item.variantTitle || ""
+    })),
+    shipping_lines: shippingLineTitle
+      ? [{ title: shippingLineTitle, code: shippingLineTitle }]
+      : [],
+    delivery_method: deliveryMethod,
     pickup_status: pickupStatus,
     metafields: {
       school_tag: noteAttributes.school_tag || "",
@@ -149,6 +241,62 @@ function normalizeOrder(order) {
   };
 }
 
+async function getOrderById(shop, token, orderId) {
+  const query = `
+    query GetOrder($id: ID!) {
+      order(id: $id) {
+        id
+        legacyResourceId
+        name
+        createdAt
+        updatedAt
+        sourceName
+        email
+        phone
+        tags
+        displayFinancialStatus
+        displayFulfillmentStatus
+        customAttributes {
+          key
+          value
+        }
+        customer {
+          id
+          displayName
+          phone
+        }
+        shippingLine {
+          title
+        }
+        currentTotalPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
+        lineItems(first: 50) {
+          edges {
+            node {
+              id
+              title
+              quantity
+              sku
+              variantTitle
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const gid = `gid://shopify/Order/${orderId}`;
+  const data = await shopifyGraphQL(shop, token, query, { id: gid });
+  if (!data.order) {
+    throw new Error("Order not found");
+  }
+  return normalizeOrderNode(data.order);
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, PUT, OPTIONS");
@@ -163,7 +311,9 @@ export default async function handler(req, res) {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
   if (!shop || !token) {
-    return res.status(500).json({ error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN" });
+    return res.status(500).json({
+      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
+    });
   }
 
   const orderId = req.query.id;
@@ -173,11 +323,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const getUrl = `https://${shop}/admin/api/2025-10/orders/${orderId}.json?status=any`;
-
     if (req.method === "GET") {
-      const data = await shopifyFetch(getUrl, token);
-      return res.status(200).json({ order: normalizeOrder(data.order) });
+      const order = await getOrderById(shop, token, orderId);
+      return res.status(200).json({ order });
     }
 
     if (req.method !== "PUT") {
@@ -185,13 +333,16 @@ export default async function handler(req, res) {
     }
 
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+
     const sourceType = String(body.source_type || "web").toLowerCase();
     const tags = normalizeTags(body.tags);
     const metafields = body.metafields || {};
     const schoolTag = String(metafields.school_tag || "misc").toLowerCase();
 
-    const existingData = await shopifyFetch(getUrl, token);
+    const existingRestUrl = `https://${shop}/admin/api/2025-10/orders/${orderId}.json?status=any`;
+    const existingData = await shopifyFetch(existingRestUrl, token);
     const existingOrder = existingData.order;
+
     const existingNoteAttributes = toNoteAttributesObject(existingOrder.note_attributes);
 
     const mergedNoteAttributes = {
@@ -231,7 +382,7 @@ export default async function handler(req, res) {
       const webCustomer = body.web_customer || {};
       const nameParts = splitName(
         webCustomer.customer_name ||
-        `${existingOrder.customer?.first_name || ""} ${existingOrder.customer?.last_name || ""}`.trim()
+          `${existingOrder.customer?.first_name || ""} ${existingOrder.customer?.last_name || ""}`.trim()
       );
 
       if (existingOrder.customer?.id) {
@@ -303,10 +454,10 @@ export default async function handler(req, res) {
       }
     }
 
-    const freshData = await shopifyFetch(getUrl, token);
+    const order = await getOrderById(shop, token, orderId);
     return res.status(200).json({
       ok: true,
-      order: normalizeOrder(freshData.order)
+      order
     });
   } catch (error) {
     return res.status(500).json({
