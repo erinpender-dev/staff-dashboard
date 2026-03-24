@@ -25,10 +25,8 @@ function normalize(body = {}) {
     delivery_notes: clean(body.delivery_notes),
     staff_notes: clean(body.staff_notes),
     production_notes: clean(body.production_notes),
-
     internal_order_status: clean(body.internal_order_status),
     internal_payment_status: clean(body.internal_payment_status),
-
     updated_at: new Date().toISOString()
   };
 }
