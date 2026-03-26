@@ -66,41 +66,109 @@ function normalizePartialPayments(value) {
     .filter((payment) => payment.type || payment.amount || payment.check_number);
 }
 
-function normalize(body = {}) {
+function normalize(body = {}, existing = {}) {
+  const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
+
   return {
-    custom_customer_name: clean(body.custom_customer_name),
-    custom_customer_email: clean(body.custom_customer_email),
-    custom_customer_phone: clean(body.custom_customer_phone),
+    custom_customer_name: has("custom_customer_name")
+      ? clean(body.custom_customer_name)
+      : clean(existing.custom_customer_name),
 
-    prepared_for: clean(body.prepared_for),
-    reference: clean(body.reference),
-    school: clean(body.school),
-    sent_with: clean(body.sent_with),
+    custom_customer_email: has("custom_customer_email")
+      ? clean(body.custom_customer_email)
+      : clean(existing.custom_customer_email),
 
-    delivery_notes: clean(body.delivery_notes),
-    staff_notes: clean(body.staff_notes),
-    production_notes: clean(body.production_notes),
+    custom_customer_phone: has("custom_customer_phone")
+      ? clean(body.custom_customer_phone)
+      : clean(existing.custom_customer_phone),
 
-    internal_order_status: clean(body.internal_order_status).toLowerCase(),
-    internal_payment_status: clean(body.internal_payment_status).toLowerCase(),
+    prepared_for: has("prepared_for")
+      ? clean(body.prepared_for)
+      : clean(existing.prepared_for),
 
-    payment_received_type: clean(body.payment_received_type),
-    payment_received_amount: clean(body.payment_received_amount),
-    payment_received_check_number: clean(body.payment_received_check_number),
+    reference: has("reference")
+      ? clean(body.reference)
+      : clean(existing.reference),
 
-    partial_payments: normalizePartialPayments(body.partial_payments),
+    school: has("school")
+      ? clean(body.school)
+      : clean(existing.school),
 
-    client_contacts: normalizeContacts(body.client_contacts),
-    contact_cards: normalizeContacts(body.contact_cards),
-    contacts: normalizeContacts(body.contacts),
-    custom_contacts: normalizeContacts(body.custom_contacts),
-    metafield_contacts: normalizeContacts(body.metafield_contacts),
-    dashboard_contacts: normalizeContacts(body.dashboard_contacts),
-    order_contacts: normalizeContacts(body.order_contacts),
+    sent_with: has("sent_with")
+      ? clean(body.sent_with)
+      : clean(existing.sent_with),
 
-    organizations: Array.isArray(body.organizations)
-      ? body.organizations.map((value) => clean(value)).filter(Boolean)
-      : [],
+    delivery_notes: has("delivery_notes")
+      ? clean(body.delivery_notes)
+      : clean(existing.delivery_notes),
+
+    staff_notes: has("staff_notes")
+      ? clean(body.staff_notes)
+      : clean(existing.staff_notes),
+
+    production_notes: has("production_notes")
+      ? clean(body.production_notes)
+      : clean(existing.production_notes),
+
+    internal_order_status: has("internal_order_status")
+      ? clean(body.internal_order_status).toLowerCase()
+      : clean(existing.internal_order_status).toLowerCase(),
+
+    internal_payment_status: has("internal_payment_status")
+      ? clean(body.internal_payment_status).toLowerCase()
+      : clean(existing.internal_payment_status).toLowerCase(),
+
+    payment_received_type: has("payment_received_type")
+      ? clean(body.payment_received_type)
+      : clean(existing.payment_received_type),
+
+    payment_received_amount: has("payment_received_amount")
+      ? clean(body.payment_received_amount)
+      : clean(existing.payment_received_amount),
+
+    payment_received_check_number: has("payment_received_check_number")
+      ? clean(body.payment_received_check_number)
+      : clean(existing.payment_received_check_number),
+
+    partial_payments: has("partial_payments")
+      ? normalizePartialPayments(body.partial_payments)
+      : normalizePartialPayments(existing.partial_payments),
+
+    client_contacts: has("client_contacts")
+      ? normalizeContacts(body.client_contacts)
+      : normalizeContacts(existing.client_contacts),
+
+    contact_cards: has("contact_cards")
+      ? normalizeContacts(body.contact_cards)
+      : normalizeContacts(existing.contact_cards),
+
+    contacts: has("contacts")
+      ? normalizeContacts(body.contacts)
+      : normalizeContacts(existing.contacts),
+
+    custom_contacts: has("custom_contacts")
+      ? normalizeContacts(body.custom_contacts)
+      : normalizeContacts(existing.custom_contacts),
+
+    metafield_contacts: has("metafield_contacts")
+      ? normalizeContacts(body.metafield_contacts)
+      : normalizeContacts(existing.metafield_contacts),
+
+    dashboard_contacts: has("dashboard_contacts")
+      ? normalizeContacts(body.dashboard_contacts)
+      : normalizeContacts(existing.dashboard_contacts),
+
+    order_contacts: has("order_contacts")
+      ? normalizeContacts(body.order_contacts)
+      : normalizeContacts(existing.order_contacts),
+
+    organizations: has("organizations")
+      ? (Array.isArray(body.organizations)
+          ? body.organizations.map((value) => clean(value)).filter(Boolean)
+          : [])
+      : (Array.isArray(existing.organizations)
+          ? existing.organizations.map((value) => clean(value)).filter(Boolean)
+          : []),
 
     updated_at: new Date().toISOString()
   };
@@ -542,7 +610,8 @@ export default async function handler(req, res) {
       return;
     }
 
-    const normalized = normalize(req.body);
+    const existing = await readPrivateJson(orderId).catch(() => null);
+const normalized = normalize(req.body, existing || {});
     const path = getPath(orderId);
 
     await put(path, JSON.stringify(normalized, null, 2), {
