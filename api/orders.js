@@ -14,11 +14,41 @@ function clean(value) {
 function parseJsonSafe(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
   if (Array.isArray(value) || typeof value === "object") return value;
+
   try {
     return JSON.parse(value);
   } catch (error) {
     return fallback;
   }
+}
+
+function normalizeContact(contact = {}) {
+  return {
+    name: clean(contact.name),
+    email: clean(contact.email),
+    phone: clean(contact.phone),
+    organization: clean(contact.organization),
+    title: clean(contact.title),
+    role: clean(contact.role)
+  };
+}
+
+function normalizeContactsFromAny(value) {
+  const parsed = parseJsonSafe(value, value);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((contact) => normalizeContact(contact))
+    .filter((contact) => {
+      return (
+        contact.name ||
+        contact.email ||
+        contact.phone ||
+        contact.organization ||
+        contact.title ||
+        contact.role
+      );
+    });
 }
 
 function getPath(orderId) {
@@ -76,57 +106,28 @@ function getShopifyCustomerName(order) {
 
   return clean(
     order.billing_address?.name ||
-    order.shipping_address?.name ||
-    "No customer name"
+      order.shipping_address?.name ||
+      "No customer name"
   );
 }
 
 function getShopifyCustomerEmail(order) {
   return clean(
     order.email ||
-    order.customer?.email ||
-    order.contact_email ||
-    ""
+      order.customer?.email ||
+      order.contact_email ||
+      ""
   );
 }
 
 function getShopifyCustomerPhone(order) {
   return clean(
     order.phone ||
-    order.billing_address?.phone ||
-    order.shipping_address?.phone ||
-    order.customer?.phone ||
-    ""
+      order.billing_address?.phone ||
+      order.shipping_address?.phone ||
+      order.customer?.phone ||
+      ""
   );
-}
-
-function normalizeContact(contact = {}) {
-  return {
-    name: clean(contact.name),
-    email: clean(contact.email),
-    phone: clean(contact.phone),
-    organization: clean(contact.organization),
-    title: clean(contact.title),
-    role: clean(contact.role)
-  };
-}
-
-function normalizeContactsFromAny(value) {
-  const parsed = parseJsonSafe(value, value);
-  if (!Array.isArray(parsed)) return [];
-
-  return parsed
-    .map((contact) => normalizeContact(contact))
-    .filter((contact) => {
-      return (
-        contact.name ||
-        contact.email ||
-        contact.phone ||
-        contact.organization ||
-        contact.title ||
-        contact.role
-      );
-    });
 }
 
 function getSavedContacts(saved) {
@@ -137,7 +138,15 @@ function getSavedContacts(saved) {
     saved?.custom_contacts,
     saved?.metafield_contacts,
     saved?.dashboard_contacts,
-    saved?.order_contacts
+    saved?.order_contacts,
+    saved?.contact_metafield,
+    saved?.metafields?.client_contacts,
+    saved?.metafields?.contact_cards,
+    saved?.metafields?.contacts,
+    saved?.custom_data?.client_contacts,
+    saved?.custom_data?.contact_cards,
+    saved?.dashboard_data?.client_contacts,
+    saved?.dashboard_data?.contact_cards
   ];
 
   for (const source of possibleSources) {
@@ -149,14 +158,25 @@ function getSavedContacts(saved) {
 }
 
 function getOrganizations(saved, contacts) {
-  const parsedSaved = parseJsonSafe(saved?.organizations, saved?.organizations);
+  const possibleSources = [
+    saved?.organizations,
+    saved?.organization,
+    saved?.orgs,
+    saved?.metafields?.organizations,
+    saved?.custom_data?.organizations,
+    saved?.dashboard_data?.organizations
+  ];
 
-  if (Array.isArray(parsedSaved) && parsedSaved.length) {
-    return parsedSaved.map((value) => clean(value)).filter(Boolean);
-  }
+  for (const source of possibleSources) {
+    const parsed = parseJsonSafe(source, null);
 
-  if (typeof parsedSaved === "string" && clean(parsedSaved)) {
-    return [clean(parsedSaved)];
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.map((value) => clean(value)).filter(Boolean);
+    }
+
+    if (typeof parsed === "string" && clean(parsed)) {
+      return [clean(parsed)];
+    }
   }
 
   const fromContacts = contacts
@@ -166,12 +186,13 @@ function getOrganizations(saved, contacts) {
   return [...new Set(fromContacts)];
 }
 
-function getReference(saved) {
+function getReference(saved, shopifyReference = "") {
   return clean(
     saved?.reference ||
-    saved?.job_reference ||
-    saved?.project_reference ||
-    ""
+      saved?.job_reference ||
+      saved?.project_reference ||
+      shopifyReference ||
+      ""
   );
 }
 
@@ -189,7 +210,7 @@ function getPartialPayments(saved) {
 }
 
 function computeInternalOrderStatus(saved, order) {
-  const rawSaved = clean(saved?.internal_order_status);
+  const rawSaved = clean(saved?.internal_order_status).toLowerCase();
   const shopifyFulfillment = clean(order.fulfillment_status || "unfulfilled").toLowerCase();
 
   if (shopifyFulfillment === "fulfilled") {
@@ -218,11 +239,7 @@ function hasPaymentDetails(saved) {
   const paymentAmount = clean(saved?.payment_received_amount);
   const partialPayments = getPartialPayments(saved);
 
-  return Boolean(
-    paymentType ||
-    paymentAmount ||
-    partialPayments.length
-  );
+  return Boolean(paymentType || paymentAmount || partialPayments.length);
 }
 
 function getManualOrderFlag(order) {
@@ -233,6 +250,7 @@ function getManualOrderFlag(order) {
 function getOrderTags(order) {
   const tags = clean(order.tags);
   if (!tags) return [];
+
   return tags
     .split(",")
     .map((tag) => clean(tag))
@@ -252,19 +270,196 @@ function buildSearchText(order) {
     order.shopify_customer_email,
     order.shopify_customer_phone,
     ...(order.organizations || []),
-    ...(order.tags || [])
+    ...(order.tags || []),
+    ...((order.contacts || []).flatMap((contact) => [
+      contact.name,
+      contact.email,
+      contact.phone,
+      contact.organization,
+      contact.title,
+      contact.role
+    ]))
   ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
 }
 
-function mapOrder(order, saved = {}) {
-  const contacts = getSavedContacts(saved);
-  const organizations = getOrganizations(saved, contacts);
+function metaobjectFieldsToMap(metaobject) {
+  const map = {};
+  const fields = Array.isArray(metaobject?.fields) ? metaobject.fields : [];
+
+  for (const field of fields) {
+    if (!field?.key) continue;
+    map[field.key] = field;
+  }
+
+  return map;
+}
+
+function getReferencedMetaobjectName(field) {
+  const reference = field?.reference;
+  if (!reference) return "";
+
+  const refFields = Array.isArray(reference.fields) ? reference.fields : [];
+  const nameField = refFields.find((item) => item?.key === "name");
+
+  return clean(nameField?.value);
+}
+
+function parseClientContactMetaobject(metaobject) {
+  if (!metaobject) return null;
+
+  const fields = metaobjectFieldsToMap(metaobject);
+
+  const contact = {
+    name: clean(fields.name?.value),
+    email: clean(fields.email?.value),
+    phone: clean(fields.phone_number?.value),
+    organization: getReferencedMetaobjectName(fields.organization),
+    title: "",
+    role: ""
+  };
+
+  if (
+    !contact.name &&
+    !contact.email &&
+    !contact.phone &&
+    !contact.organization
+  ) {
+    return null;
+  }
+
+  return contact;
+}
+
+function parseMetaobjectIdsFromMetafieldValue(value) {
+  const parsed = parseJsonSafe(value, []);
+
+  if (Array.isArray(parsed)) {
+    return parsed.map((id) => clean(id)).filter(Boolean);
+  }
+
+  if (typeof parsed === "string" && clean(parsed)) {
+    return [clean(parsed)];
+  }
+
+  return [];
+}
+
+async function shopifyGraphQL(shop, token, query, variables = {}) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const json = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      json?.errors?.[0]?.message ||
+        json?.error ||
+        "Shopify GraphQL request failed"
+    );
+  }
+
+  if (json.errors?.length) {
+    throw new Error(json.errors.map((e) => e.message).join(" | "));
+  }
+
+  return json.data;
+}
+
+async function fetchOrderMetafields(shop, token, orderId) {
+  const query = `
+    query GetOrderMetafields($id: ID!) {
+      node(id: $id) {
+        ... on Order {
+          id
+          clientContactInformation: metafield(namespace: "custom", key: "client_contact_information") {
+            id
+            type
+            value
+          }
+          reference: metafield(namespace: "custom", key: "reference") {
+            id
+            type
+            value
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(
+    shop,
+    token,
+    query,
+    { id: `gid://shopify/Order/${orderId}` }
+  );
+
+  return {
+    clientContactInformation: data?.node?.clientContactInformation || null,
+    reference: data?.node?.reference || null
+  };
+}
+
+async function fetchMetaobjectsByIds(shop, token, ids) {
+  if (!Array.isArray(ids) || !ids.length) return [];
+
+  const query = `
+    query GetMetaobjectsByIds($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Metaobject {
+          id
+          type
+          handle
+          fields {
+            key
+            value
+            reference {
+              ... on Metaobject {
+                id
+                type
+                handle
+                fields {
+                  key
+                  value
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, { ids });
+  return Array.isArray(data?.nodes) ? data.nodes.filter(Boolean) : [];
+}
+
+function mapOrder(order, saved = {}, extras = {}) {
+  const metafieldContact = extras.metafieldContact || null;
+  const metafieldContacts = metafieldContact ? [normalizeContact(metafieldContact)] : [];
+  const savedContacts = getSavedContacts(saved);
+  const contacts = savedContacts.length ? savedContacts : metafieldContacts;
+
+  const organizations = getOrganizations(
+    saved?.organizations && parseJsonSafe(saved.organizations, saved.organizations)
+      ? saved
+      : { ...saved, organizations: extras.metafieldOrganizations || [] },
+    contacts
+  );
+
   const internalOrderStatus = computeInternalOrderStatus(saved, order);
   const internalPaymentStatus = computeInternalPaymentStatus(saved, order);
-  const paymentDetailsMissing = clean(order.financial_status).toLowerCase() === "paid" && !hasPaymentDetails(saved);
+  const paymentDetailsMissing =
+    clean(order.financial_status).toLowerCase() === "paid" &&
+    !hasPaymentDetails(saved);
 
   const mapped = {
     id: order.id,
@@ -319,12 +514,23 @@ function mapOrder(order, saved = {}) {
     shopify_customer_email: getShopifyCustomerEmail(order),
     shopify_customer_phone: getShopifyCustomerPhone(order),
 
-    custom_customer_name: clean(saved.custom_customer_name) || getShopifyCustomerName(order),
-    custom_customer_email: clean(saved.custom_customer_email) || getShopifyCustomerEmail(order),
-    custom_customer_phone: clean(saved.custom_customer_phone) || getShopifyCustomerPhone(order),
+    custom_customer_name:
+      clean(saved.custom_customer_name) ||
+      clean(metafieldContact?.name) ||
+      getShopifyCustomerName(order),
+
+    custom_customer_email:
+      clean(saved.custom_customer_email) ||
+      clean(metafieldContact?.email) ||
+      getShopifyCustomerEmail(order),
+
+    custom_customer_phone:
+      clean(saved.custom_customer_phone) ||
+      clean(metafieldContact?.phone) ||
+      getShopifyCustomerPhone(order),
 
     prepared_for: clean(saved.prepared_for) || getPreparedForFromShopify(order),
-    reference: getReference(saved),
+    reference: getReference(saved, clean(extras.shopifyReference)),
     school: clean(saved.school),
     sent_with: clean(saved.sent_with),
 
@@ -341,7 +547,14 @@ function mapOrder(order, saved = {}) {
     partial_payments: getPartialPayments(saved),
     payment_details_missing: paymentDetailsMissing,
 
+    client_contacts: savedContacts.length ? savedContacts : metafieldContacts,
+    contact_cards: savedContacts.length ? savedContacts : metafieldContacts,
     contacts,
+    custom_contacts: normalizeContactsFromAny(saved?.custom_contacts),
+    metafield_contacts: metafieldContacts,
+    dashboard_contacts: normalizeContactsFromAny(saved?.dashboard_contacts),
+    order_contacts: savedContacts.length ? savedContacts : metafieldContacts,
+
     organizations,
 
     _search: ""
@@ -351,10 +564,18 @@ function mapOrder(order, saved = {}) {
   return mapped;
 }
 
-async function fetchOrdersFromShopify({ shop, token, status = "any", limit = 100, financialStatus = "", fulfillmentStatus = "" }) {
+async function fetchOrdersFromShopify({
+  shop,
+  token,
+  status = "any",
+  limit = 100,
+  financialStatus = "",
+  fulfillmentStatus = ""
+}) {
   const params = new URLSearchParams();
   params.set("status", status || "any");
   params.set("limit", String(limit || 100));
+  params.set("order", "created_at desc");
 
   if (financialStatus) params.set("financial_status", financialStatus);
   if (fulfillmentStatus) params.set("fulfillment_status", fulfillmentStatus);
@@ -366,26 +587,35 @@ async function fetchOrdersFromShopify({ shop, token, status = "any", limit = 100
     }
   });
 
+  const text = await response.text();
+
   if (!response.ok) {
-    const text = await response.text();
     throw new Error(`Shopify orders fetch failed: ${text}`);
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid Shopify response: ${text}`);
+  }
+
   return Array.isArray(data.orders) ? data.orders : [];
 }
 
 export default async function handler(req, res) {
   setCors(req, res);
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
 
   if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
+    return res.status(200).end();
   }
 
   if (req.method !== "GET") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
@@ -393,16 +623,17 @@ export default async function handler(req, res) {
     const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
     if (!shop || !token) {
-      res.status(500).json({ error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN" });
-      return;
+      return res.status(500).json({
+        error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
+      });
     }
 
     const status = clean(req.query.status || "any");
-    const limit = Number(req.query.limit || 100);
-    const financialStatus = clean(req.query.financial_status || "");
     const fulfillmentStatus = clean(req.query.fulfillment_status || "");
+    const financialStatus = clean(req.query.financial_status || "");
+    const limit = Number(req.query.limit || 100);
 
-    const orders = await fetchOrdersFromShopify({
+    const rawOrders = await fetchOrdersFromShopify({
       shop,
       token,
       status,
@@ -411,42 +642,71 @@ export default async function handler(req, res) {
       fulfillmentStatus
     });
 
-    const mappedOrders = await Promise.all(
-      orders.map(async (order) => {
+    const orders = await Promise.all(
+      rawOrders.map(async (order) => {
         let saved = null;
+        let metafieldContact = null;
+        let metafieldOrganizations = [];
+        let shopifyReference = "";
+
         try {
           saved = await readPrivateJson(order.id);
         } catch (error) {
           saved = null;
         }
-        return mapOrder(order, saved || {});
+
+        try {
+          const metafields = await fetchOrderMetafields(shop, token, order.id);
+          const ids = parseMetaobjectIdsFromMetafieldValue(
+            metafields?.clientContactInformation?.value
+          );
+
+          const metaobjects = await fetchMetaobjectsByIds(shop, token, ids);
+          metafieldContact = parseClientContactMetaobject(metaobjects[0] || null);
+
+          if (metafieldContact?.organization) {
+            metafieldOrganizations = [metafieldContact.organization];
+          }
+
+          shopifyReference = clean(metafields?.reference?.value);
+        } catch (error) {
+          metafieldContact = null;
+          metafieldOrganizations = [];
+          shopifyReference = "";
+        }
+
+        return mapOrder(order, saved || {}, {
+          metafieldContact,
+          metafieldOrganizations,
+          shopifyReference
+        });
       })
     );
 
-    mappedOrders.sort((a, b) => {
+    orders.sort((a, b) => {
       const aTime = new Date(a.created_at).getTime();
       const bTime = new Date(b.created_at).getTime();
       return bTime - aTime;
     });
 
     const stats = {
-      total: mappedOrders.length,
-      paid: mappedOrders.filter((order) => order.financial_status === "paid").length,
-      unpaid: mappedOrders.filter((order) => order.financial_status !== "paid").length,
-      fulfilled: mappedOrders.filter((order) => order.fulfillment_status === "fulfilled").length,
-      unfulfilled: mappedOrders.filter((order) => order.fulfillment_status !== "fulfilled").length,
-      payment_details_missing: mappedOrders.filter((order) => order.payment_details_missing).length,
-      manual: mappedOrders.filter((order) => order.manual_order).length,
-      web: mappedOrders.filter((order) => !order.manual_order).length
+      total: orders.length,
+      paid: orders.filter((order) => order.financial_status === "paid").length,
+      unpaid: orders.filter((order) => order.financial_status !== "paid").length,
+      fulfilled: orders.filter((order) => order.fulfillment_status === "fulfilled").length,
+      unfulfilled: orders.filter((order) => order.fulfillment_status !== "fulfilled").length,
+      payment_details_missing: orders.filter((order) => order.payment_details_missing).length,
+      manual: orders.filter((order) => order.manual_order).length,
+      web: orders.filter((order) => !order.manual_order).length
     };
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
       stats,
-      orders: mappedOrders
+      orders
     });
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
       error: error.message || "Could not load orders."
     });
   }
