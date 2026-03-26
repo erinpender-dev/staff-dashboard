@@ -177,6 +177,154 @@ async function getOrderById(shop, token, orderId) {
   return json.order;
 }
 
+function fieldMapFromMetaobject(metaobject) {
+  const map = {};
+  const fields = Array.isArray(metaobject?.fields) ? metaobject.fields : [];
+  for (const field of fields) {
+    map[field.key] = field;
+  }
+  return map;
+}
+
+function organizationFromMetaobject(metaobject) {
+  if (!metaobject) return null;
+  const fields = fieldMapFromMetaobject(metaobject);
+
+  return {
+    id: clean(metaobject.id),
+    handle: clean(metaobject.handle),
+    name:
+      clean(fields.name?.value) ||
+      clean(fields.title?.value) ||
+      clean(fields.label?.value) ||
+      clean(metaobject.displayName)
+  };
+}
+
+async function getOrderContactMeta(shop, token, orderId) {
+  const query = `
+    query OrderContactInfo($id: ID!) {
+      order(id: $id) {
+        id
+        metafield(namespace: "custom", key: "client_contact_information") {
+          id
+          type
+          value
+          reference {
+            ... on Metaobject {
+              id
+              handle
+              type
+              displayName
+              fields {
+                key
+                value
+                reference {
+                  ... on Metaobject {
+                    id
+                    handle
+                    type
+                    displayName
+                    fields {
+                      key
+                      value
+                    }
+                  }
+                }
+                references(first: 20) {
+                  nodes {
+                    ... on Metaobject {
+                      id
+                      handle
+                      type
+                      displayName
+                      fields {
+                        key
+                        value
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, {
+    id: `gid://shopify/Order/${orderId}`
+  });
+
+  const contactMeta = data?.order?.metafield?.reference;
+  if (!contactMeta) {
+    return {
+      custom_customer_name: "",
+      custom_customer_email: "",
+      custom_customer_phone: "",
+      client_contacts: [],
+      contact_cards: [],
+      contacts: [],
+      custom_contacts: [],
+      metafield_contacts: [],
+      dashboard_contacts: [],
+      order_contacts: [],
+      organizations: []
+    };
+  }
+
+  const fields = fieldMapFromMetaobject(contactMeta);
+
+  const name = clean(fields.name?.value);
+  const email = clean(fields.email?.value);
+  const phone = clean(fields.phone_number?.value);
+
+  const organizations = [];
+  const orgField = fields.organizations;
+
+  if (Array.isArray(orgField?.references?.nodes) && orgField.references.nodes.length) {
+    for (const node of orgField.references.nodes) {
+      const org = organizationFromMetaobject(node);
+      if (org?.name || org?.handle || org?.id) {
+        organizations.push(org.name || org.handle || org.id);
+      }
+    }
+  } else if (orgField?.reference) {
+    const org = organizationFromMetaobject(orgField.reference);
+    if (org?.name || org?.handle || org?.id) {
+      organizations.push(org.name || org.handle || org.id);
+    }
+  }
+
+  const primaryContact = normalizeContact({
+    name,
+    email,
+    phone,
+    organization: organizations[0] || "",
+    title: "",
+    role: ""
+  });
+
+  const contacts = primaryContact.name || primaryContact.email || primaryContact.phone
+    ? [primaryContact]
+    : [];
+
+  return {
+    custom_customer_name: name,
+    custom_customer_email: email,
+    custom_customer_phone: phone,
+    client_contacts: contacts,
+    contact_cards: contacts,
+    contacts,
+    custom_contacts: [],
+    metafield_contacts: contacts,
+    dashboard_contacts: [],
+    order_contacts: contacts,
+    organizations
+  };
+}
+
 async function markOrderPaid(shop, token, orderId) {
   const response = await fetch(`https://${shop}/admin/api/2025-10/orders/${orderId}/transactions.json`, {
     method: "POST",
@@ -293,19 +441,19 @@ async function fulfillOrder(shop, token, shopifyOrder) {
   }
 
   const mutation = `
-  mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
-    fulfillmentCreateV2(fulfillment: $fulfillment) {
-      fulfillment {
-        id
-        status
-      }
-      userErrors {
-        field
-        message
+    mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
+      fulfillmentCreateV2(fulfillment: $fulfillment) {
+        fulfillment {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
+        }
       }
     }
-  }
-`;
+  `;
 
   const fulfillment = {
     lineItemsByFulfillmentOrder,
@@ -348,8 +496,38 @@ export default async function handler(req, res) {
         return;
       }
 
-      const saved = await readPrivateJson(orderId);
-      res.status(200).json({ ok: true, data: saved || {} });
+      const [saved, metafieldData] = await Promise.all([
+        readPrivateJson(orderId).catch(() => null),
+        getOrderContactMeta(shop, token, orderId).catch(() => ({
+          custom_customer_name: "",
+          custom_customer_email: "",
+          custom_customer_phone: "",
+          client_contacts: [],
+          contact_cards: [],
+          contacts: [],
+          custom_contacts: [],
+          metafield_contacts: [],
+          dashboard_contacts: [],
+          order_contacts: [],
+          organizations: []
+        }))
+      ]);
+
+      const merged = {
+        ...(saved || {}),
+        ...metafieldData,
+        custom_customer_name: metafieldData.custom_customer_name,
+        custom_customer_email: metafieldData.custom_customer_email,
+        custom_customer_phone: metafieldData.custom_customer_phone,
+        client_contacts: metafieldData.client_contacts,
+        contact_cards: metafieldData.contact_cards,
+        contacts: metafieldData.contacts,
+        metafield_contacts: metafieldData.metafield_contacts,
+        order_contacts: metafieldData.order_contacts,
+        organizations: metafieldData.organizations
+      };
+
+      res.status(200).json({ ok: true, data: merged });
       return;
     }
 
