@@ -293,19 +293,19 @@ async function fulfillOrder(shop, token, shopifyOrder) {
   }
 
   const mutation = `
-    mutation CreateFulfillment($fulfillment: FulfillmentInput!) {
-      fulfillmentCreateV2(fulfillment: $fulfillment) {
-        fulfillment {
-          id
-          status
-        }
-        userErrors {
-          field
-          message
-        }
+  mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
+    fulfillmentCreateV2(fulfillment: $fulfillment) {
+      fulfillment {
+        id
+        status
+      }
+      userErrors {
+        field
+        message
       }
     }
-  `;
+  }
+`;
 
   const fulfillment = {
     lineItemsByFulfillmentOrder,
