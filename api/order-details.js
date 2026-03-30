@@ -332,9 +332,10 @@ function normalizePartialPayments(value) {
       type: clean(payment?.type),
       amount: clean(payment?.amount),
       check_number: clean(payment?.check_number),
-      note: clean(payment?.note)
+      note: clean(payment?.note),
+      booster_account_name: clean(payment?.booster_account_name)
     }))
-    .filter((payment) => payment.type || payment.amount || payment.check_number || payment.note);
+    .filter((payment) => payment.type || payment.amount || payment.check_number || payment.note || payment.booster_account_name);
 }
 
 function normalize(body = {}, existing = {}) {
