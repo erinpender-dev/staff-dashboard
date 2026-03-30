@@ -331,9 +331,10 @@ function normalizePartialPayments(value) {
     .map((payment) => ({
       type: clean(payment?.type),
       amount: clean(payment?.amount),
-      check_number: clean(payment?.check_number)
+      check_number: clean(payment?.check_number),
+      note: clean(payment?.note)
     }))
-    .filter((payment) => payment.type || payment.amount || payment.check_number);
+    .filter((payment) => payment.type || payment.amount || payment.check_number || payment.note);
 }
 
 function normalize(body = {}, existing = {}) {
@@ -421,6 +422,10 @@ function normalize(body = {}, existing = {}) {
     payment_received_amount: has("payment_received_amount")
       ? clean(body.payment_received_amount)
       : clean(existing.payment_received_amount),
+
+    payment_received_note: has("payment_received_note")
+      ? clean(body.payment_received_note)
+      : clean(existing.payment_received_note),
 
     payment_received_check_number: has("payment_received_check_number")
       ? clean(body.payment_received_check_number)

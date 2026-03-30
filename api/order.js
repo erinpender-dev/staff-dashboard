@@ -453,6 +453,7 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
       booster_credit_needs_review: boosterDefaults.booster_credit_needs_review,
       booster_credit_amount: clean(saved.booster_credit_amount),
       booster_payment_account_name: clean(saved.booster_payment_account_name),
+      payment_received_note: clean(saved.payment_received_note),
 
       custom_updated_at: clean(saved.updated_at),
 

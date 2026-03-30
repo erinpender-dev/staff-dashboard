@@ -223,9 +223,10 @@ function getPartialPayments(saved) {
     .map((payment) => ({
       type: clean(payment?.type),
       amount: clean(payment?.amount),
-      check_number: clean(payment?.check_number)
+      check_number: clean(payment?.check_number),
+      note: clean(payment?.note)
     }))
-    .filter((payment) => payment.type || payment.amount || payment.check_number);
+    .filter((payment) => payment.type || payment.amount || payment.check_number || payment.note);
 }
 
 function computeInternalOrderStatus(saved, order) {
@@ -628,6 +629,7 @@ function mapOrder(order, saved = {}, extras = {}) {
 
     payment_received_type: clean(saved.payment_received_type),
     payment_received_amount: clean(saved.payment_received_amount),
+    payment_received_note: clean(saved.payment_received_note),
     payment_received_check_number: clean(saved.payment_received_check_number),
     partial_payments: getPartialPayments(saved),
     payment_details_missing: paymentDetailsMissing,
