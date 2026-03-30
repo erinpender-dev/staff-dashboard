@@ -164,6 +164,106 @@ async function fetchOrderContacts(shop, token, orderId) {
     };
   }
 }
+const RECOGNIZED_ORG_TAGS = ["STA", "SLU", "SJS", "RISE", "HOPE HOUSE", "PERSONAL", "OTHER CLIENTS"];
+
+function isWebsiteOrder(order) {
+  const sourceName = String(order.source_name || "").toLowerCase();
+  const tags = String(order.tags || "").toLowerCase();
+
+  if (tags.includes("manual order")) return false;
+  if (tags.includes("draft order")) return false;
+  if (sourceName === "shopify_draft_order") return false;
+
+  return sourceName === "web";
+}
+
+function normalizeTagList(value) {
+  if (!value) return [];
+
+  if (Array.isArray(value)) {
+    return value
+      .map(v => String(v).trim().toUpperCase())
+      .filter(Boolean);
+  }
+
+  return String(value)
+    .split(",")
+    .map(v => v.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function parseAmount(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const num = Number(String(value).replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(num) ? num : null;
+}
+
+function getLineItemFinalTotal(item) {
+  const finalLine =
+    parseAmount(item.final_line_price) ??
+    parseAmount(item.current_total_price);
+
+  if (finalLine !== null) return finalLine;
+
+  const qty =
+    parseAmount(item.current_quantity) ??
+    parseAmount(item.quantity) ??
+    0;
+
+  const unitPrice =
+    parseAmount(item.price) ??
+    parseAmount(item.original_price) ??
+    0;
+
+  const lineDiscount =
+    parseAmount(item.total_discount) ??
+    0;
+
+  return Math.max(0, (qty * unitPrice) - lineDiscount);
+}
+
+function getItemTagList(item) {
+  return [
+    ...normalizeTagList(item.product_tags),
+    ...normalizeTagList(item.tags)
+  ];
+}
+
+function getMatchedOrgTagsFromOrder(order) {
+  const items = Array.isArray(order.line_items) ? order.line_items : [];
+  const found = new Set();
+
+  for (const item of items) {
+    const itemTags = getItemTagList(item);
+
+    for (const orgTag of RECOGNIZED_ORG_TAGS) {
+      if (itemTags.includes(orgTag)) {
+        found.add(orgTag);
+      }
+    }
+  }
+
+  return Array.from(found);
+}
+
+function getAutoOrganizationTag(order) {
+  const matchedOrgs = getMatchedOrgTagsFromOrder(order);
+
+  if (matchedOrgs.length === 1) return matchedOrgs[0];
+  if (matchedOrgs.length > 1) return "Manual Review";
+  return "";
+}
+
+function getTaggedSubtotal(order, targetTag) {
+  const target = String(targetTag || "").trim().toUpperCase();
+  const items = Array.isArray(order.line_items) ? order.line_items : [];
+
+  return items.reduce((sum, item) => {
+    const itemTags = getItemTagList(item);
+    if (!itemTags.includes(target)) return sum;
+    return sum + getLineItemFinalTotal(item);
+  }, 0);
+}
 
 export default async function handler(req, res) {
   setCors(req, res);
@@ -219,7 +319,47 @@ export default async function handler(req, res) {
 
     const saved = (await readPrivateJson(orderId)) || {};
     const contactData = await fetchOrderContacts(shop, token, orderId);
+    const websiteOrder = isWebsiteOrder(order);
 
+    const uniqueProductIds = [
+      ...new Set(
+        (order.line_items || [])
+          .map((item) => item.product_id)
+          .filter(Boolean)
+      )
+    ];
+
+    const productTagsById = {};
+
+    if (websiteOrder && uniqueProductIds.length) {
+      await Promise.all(
+        uniqueProductIds.map(async (productId) => {
+          try {
+            const productResponse = await fetch(
+              `https://${shop}/admin/api/2025-10/products/${encodeURIComponent(productId)}.json?fields=id,tags`,
+              {
+                headers: {
+                  "X-Shopify-Access-Token": token,
+                  "Content-Type": "application/json"
+                }
+              }
+            );
+
+            if (!productResponse.ok) return;
+
+            const productText = await productResponse.text();
+            const productData = JSON.parse(productText);
+            const product = productData.product;
+
+            if (product?.id) {
+              productTagsById[String(product.id)] = product.tags || "";
+            }
+          } catch (e) {
+            // ignore per-product errors so one bad product doesn't break the order
+          }
+        })
+      );
+    }
     const shopifyCustomerName =
       order.customer
         ? [order.customer.first_name, order.customer.last_name]
@@ -253,7 +393,66 @@ export default async function handler(req, res) {
       })?.value || "";
 
     const primaryContact = contactData.client_contacts[0] || {};
+        const mergedLineItems = (order.line_items || [])
+      .map((item) => {
+        const rawCurrentQty =
+          item.current_quantity ??
+          item.fulfillable_quantity ??
+          item.quantity;
 
+        const qty = Number(rawCurrentQty) || 0;
+
+        return {
+          id: item.id,
+          product_id: item.product_id ?? null,
+          product_tags: productTagsById[String(item.product_id)] || "",
+          title: item.title,
+          variant_title: item.variant_title,
+          sku: item.sku,
+          quantity: item.quantity,
+          current_quantity: item.current_quantity ?? null,
+          fulfillable_quantity: item.fulfillable_quantity ?? null,
+          vendor: item.vendor,
+          price: item.price,
+          original_price: item.original_price ?? item.price,
+          total_discount: item.total_discount,
+          final_line_price:
+            item.final_line_price ??
+            item.current_total_price ??
+            (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+          current_total_price:
+            item.current_total_price ??
+            (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+          is_removed: qty <= 0
+        };
+      })
+      .filter((item) => {
+        if (item.current_quantity !== null) return Number(item.current_quantity) > 0;
+        if (item.fulfillable_quantity !== null) return Number(item.fulfillable_quantity) > 0;
+        return Number(item.quantity) > 0;
+      });
+        const orderForOrgLogic = {
+      ...order,
+      line_items: mergedLineItems
+    };
+
+    const autoOrganizationTag = websiteOrder
+      ? getAutoOrganizationTag(orderForOrgLogic)
+      : "";
+
+    const staEligibleSubtotal =
+      websiteOrder && autoOrganizationTag === "STA"
+        ? getTaggedSubtotal(orderForOrgLogic, "STA")
+        : 0;
+
+    const defaultBoosterStatus =
+      !websiteOrder
+        ? "not eligible"
+        : autoOrganizationTag === "STA"
+          ? "needs approval"
+          : autoOrganizationTag === "Manual Review"
+            ? "manual review"
+            : "not eligible";
     const merged = {
       id: order.id,
       name: order.name,
@@ -271,8 +470,21 @@ current_subtotal_price: order.current_subtotal_price ?? order.subtotal_price,
 current_total_discounts: order.current_total_discounts ?? order.total_discounts,
 current_total_tax: order.current_total_tax ?? order.total_tax,
       currency: order.currency,
-      tags: order.tags || "",
+           tags: order.tags || "",
       note: order.note || "",
+
+      is_website_order: websiteOrder,
+      organization_tag: clean(saved.organization_tag) || autoOrganizationTag,
+      organization_source:
+        clean(saved.organization_source) ||
+        (autoOrganizationTag ? "product-tags-auto" : ""),
+
+      booster_status: clean(saved.booster_status) || defaultBoosterStatus,
+      booster_percent: clean(saved.booster_percent),
+      booster_eligible_subtotal:
+        parseAmount(saved.booster_eligible_subtotal) ?? staEligibleSubtotal,
+      booster_credit_amount:
+        parseAmount(saved.booster_credit_amount) ?? 0,
 
       shopify_customer_name: clean(shopifyCustomerName),
       shopify_customer_email: clean(shopifyCustomerEmail),
@@ -317,42 +529,7 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
       shipping_address: order.shipping_address || null,
       billing_address: order.billing_address || null,
 
-      line_items: (order.line_items || [])
-        .map((item) => {
-          const rawCurrentQty =
-            item.current_quantity ??
-            item.fulfillable_quantity ??
-            item.quantity;
-
-          const qty = Number(rawCurrentQty) || 0;
-
-          return {
-            id: item.id,
-            title: item.title,
-            variant_title: item.variant_title,
-            sku: item.sku,
-            quantity: item.quantity,
-            current_quantity: item.current_quantity ?? null,
-            fulfillable_quantity: item.fulfillable_quantity ?? null,
-            vendor: item.vendor,
-            price: item.price,
-            original_price: item.original_price ?? item.price,
-            total_discount: item.total_discount,
-            final_line_price:
-              item.final_line_price ??
-              item.current_total_price ??
-              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
-            current_total_price:
-              item.current_total_price ??
-              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
-            is_removed: qty <= 0
-          };
-        })
-        .filter((item) => {
-          if (item.current_quantity !== null) return Number(item.current_quantity) > 0;
-          if (item.fulfillable_quantity !== null) return Number(item.fulfillable_quantity) > 0;
-          return Number(item.quantity) > 0;
-        })
+            line_items: mergedLineItems
     };
 
     return res.status(200).json({ order: merged });
