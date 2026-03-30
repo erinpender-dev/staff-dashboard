@@ -279,7 +279,8 @@ export default async function handler(req, res) {
 
   const shop = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
-  const orderId = req.query.id;
+    const url = new URL(req.url, "http://localhost");
+  const orderId = req.query?.id || url.searchParams.get("id") || "";
 
   if (!shop || !token) {
     return res.status(500).json({
