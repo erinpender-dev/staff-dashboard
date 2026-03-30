@@ -548,6 +548,18 @@ async function getOrderContactMeta(shop, token, orderId) {
                 fields {
                   key
                   value
+                  reference {
+                    ... on Metaobject {
+                      id
+                      handle
+                      type
+                      displayName
+                      fields {
+                        key
+                        value
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -574,11 +586,15 @@ async function getOrderContactMeta(shop, token, orderId) {
 
   const contacts = nodes.map((node) => {
     const fields = fieldMapFromMetaobject(node);
+    const organizationMetaobject = fields.organization?.reference || null;
+    const organizationName = organizationMetaobject
+      ? (organizationFromMetaobject(organizationMetaobject)?.name || "")
+      : clean(fields.organization?.value);
     return normalizeContact({
       name: clean(fields.name?.value),
       email: clean(fields.email?.value),
       phone: clean(fields.phone_number?.value || fields.phone?.value),
-      organization: clean(fields.organization?.value),
+      organization: organizationName,
       title: "",
       role: ""
     });
