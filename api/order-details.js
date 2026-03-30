@@ -24,6 +24,258 @@ function parseJsonSafe(value, fallback = null) {
   }
 }
 
+function parseAmount(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+
+  const cleaned = String(value).replace(/[^0-9.-]/g, "");
+  if (!cleaned) return 0;
+
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatAmount(value) {
+  const amount = Number(value || 0);
+  return amount.toFixed(2);
+}
+
+function normalizeLower(value) {
+  return clean(value).toLowerCase();
+}
+
+const BOOSTER_ACCOUNTS_PATH = "booster-club/accounts.json";
+const BOOSTER_LEDGER_PATH = "booster-club/ledger.json";
+
+async function readPrivatePath(path) {
+  const baseUrl = process.env.BLOB_BASE_URL;
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+
+  if (!baseUrl || !token) {
+    throw new Error("Missing BLOB_BASE_URL or BLOB_READ_WRITE_TOKEN");
+  }
+
+  const url = `${baseUrl}/${path}`;
+  const response = await fetch(`${url}?ts=${Date.now()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Cache-Control": "no-cache"
+    },
+    cache: "no-store"
+  });
+
+  if (response.status === 404) return null;
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Blob read failed: ${text}`);
+  }
+
+  return await response.json();
+}
+
+async function writePrivatePath(path, data) {
+  await put(path, JSON.stringify(data, null, 2), {
+    access: "private",
+    contentType: "application/json",
+    token: process.env.BLOB_READ_WRITE_TOKEN,
+    addRandomSuffix: false,
+    allowOverwrite: true
+  });
+}
+
+async function readBoosterAccounts() {
+  const data = await readPrivatePath(BOOSTER_ACCOUNTS_PATH).catch(() => null);
+  return Array.isArray(data?.accounts) ? data.accounts : [];
+}
+
+async function writeBoosterAccounts(accounts) {
+  await writePrivatePath(BOOSTER_ACCOUNTS_PATH, {
+    updated_at: new Date().toISOString(),
+    accounts
+  });
+}
+
+async function readBoosterLedger() {
+  const data = await readPrivatePath(BOOSTER_LEDGER_PATH).catch(() => null);
+  return Array.isArray(data?.entries) ? data.entries : [];
+}
+
+async function writeBoosterLedger(entries) {
+  await writePrivatePath(BOOSTER_LEDGER_PATH, {
+    updated_at: new Date().toISOString(),
+    entries
+  });
+}
+
+function getLedgerBalances(entries = []) {
+  return entries.reduce((acc, entry) => {
+    const accountName = clean(entry?.account_name);
+    if (!accountName) return acc;
+    acc[accountName] = (acc[accountName] || 0) + parseAmount(entry?.amount);
+    return acc;
+  }, {});
+}
+
+function ensureBoosterAccount(accounts = [], name = "") {
+  const accountName = clean(name);
+  if (!accountName) return accounts;
+
+  const exists = accounts.some((account) => normalizeLower(account?.name) === normalizeLower(accountName));
+  if (exists) return accounts;
+
+  return [
+    ...accounts,
+    {
+      name: accountName,
+      organization: "sta",
+      status: "active",
+      created_at: new Date().toISOString()
+    }
+  ];
+}
+
+function getOrderTotalFromShopifyOrder(order) {
+  return parseAmount(order?.current_total_price || order?.total_price);
+}
+
+function getBoosterCreditAmount(orderTotal, percentage) {
+  const total = parseAmount(orderTotal);
+  const percent = parseAmount(percentage);
+  if (total <= 0 || percent <= 0) return 0;
+  return Number(((total * percent) / 100).toFixed(2));
+}
+
+function buildLedgerEntry({
+  type,
+  accountName,
+  orderId,
+  amount,
+  note = "",
+  meta = {}
+}) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    created_at: new Date().toISOString(),
+    type,
+    account_name: clean(accountName),
+    order_id: clean(orderId),
+    amount: formatAmount(amount),
+    note: clean(note),
+    meta
+  };
+}
+
+async function syncBoosterLedger({ existing = {}, normalized, orderId, orderTotal }) {
+  let accounts = await readBoosterAccounts();
+  let ledgerEntries = await readBoosterLedger();
+  const balances = getLedgerBalances(ledgerEntries);
+  const pendingEntries = [];
+
+  const existingCreditAccount = clean(existing.booster_credit_synced_account);
+  const existingCreditAmount = parseAmount(existing.booster_credit_synced_amount);
+  const nextCreditAccount = clean(normalized.booster_account_name);
+  const nextCreditAmount =
+    normalizeLower(normalized.booster_credit_status) === "approved" && nextCreditAccount
+      ? getBoosterCreditAmount(orderTotal, normalized.booster_credit_percentage)
+      : 0;
+
+  const existingPaymentAccount = clean(existing.booster_payment_synced_account);
+  const existingPaymentAmount = parseAmount(existing.booster_payment_synced_amount);
+  const nextPaymentAccount =
+    normalizeLower(normalized.payment_received_type) === "booster club"
+      ? clean(normalized.booster_payment_account_name || normalized.booster_account_name)
+      : "";
+  const nextPaymentAmount =
+    normalizeLower(normalized.payment_received_type) === "booster club"
+      ? parseAmount(normalized.payment_received_amount)
+      : 0;
+
+  accounts = ensureBoosterAccount(accounts, nextCreditAccount);
+  accounts = ensureBoosterAccount(accounts, nextPaymentAccount);
+
+  if (existingCreditAccount && existingCreditAmount > 0) {
+    pendingEntries.push(
+      buildLedgerEntry({
+        type: "credit_reversal",
+        accountName: existingCreditAccount,
+        orderId,
+        amount: -existingCreditAmount,
+        note: "Reversed prior approved booster credit"
+      })
+    );
+    balances[existingCreditAccount] = (balances[existingCreditAccount] || 0) - existingCreditAmount;
+  }
+
+  if (nextCreditAccount && nextCreditAmount > 0) {
+    pendingEntries.push(
+      buildLedgerEntry({
+        type: "credit_approved",
+        accountName: nextCreditAccount,
+        orderId,
+        amount: nextCreditAmount,
+        note: "Approved booster credit from order",
+        meta: {
+          percentage: clean(normalized.booster_credit_percentage),
+          order_total: formatAmount(orderTotal)
+        }
+      })
+    );
+    balances[nextCreditAccount] = (balances[nextCreditAccount] || 0) + nextCreditAmount;
+  }
+
+  if (existingPaymentAccount && existingPaymentAmount > 0) {
+    pendingEntries.push(
+      buildLedgerEntry({
+        type: "payment_reversal",
+        accountName: existingPaymentAccount,
+        orderId,
+        amount: existingPaymentAmount,
+        note: "Reversed prior booster club payment"
+      })
+    );
+    balances[existingPaymentAccount] = (balances[existingPaymentAccount] || 0) + existingPaymentAmount;
+  }
+
+  if (nextPaymentAccount && nextPaymentAmount > 0) {
+    const available = balances[nextPaymentAccount] || 0;
+    if (available < nextPaymentAmount) {
+      throw new Error(`Booster account "${nextPaymentAccount}" only has $${formatAmount(available)} available.`);
+    }
+
+    pendingEntries.push(
+      buildLedgerEntry({
+        type: "payment_applied",
+        accountName: nextPaymentAccount,
+        orderId,
+        amount: -nextPaymentAmount,
+        note: "Applied booster club balance to order"
+      })
+    );
+    balances[nextPaymentAccount] = available - nextPaymentAmount;
+  }
+
+  if (pendingEntries.length) {
+    ledgerEntries = [...ledgerEntries, ...pendingEntries];
+    await writeBoosterLedger(ledgerEntries);
+  }
+
+  await writeBoosterAccounts(accounts);
+
+  return {
+    normalized: {
+      ...normalized,
+      booster_credit_amount: nextCreditAmount > 0 ? formatAmount(nextCreditAmount) : "",
+      booster_credit_synced_account: nextCreditAmount > 0 ? nextCreditAccount : "",
+      booster_credit_synced_amount: nextCreditAmount > 0 ? formatAmount(nextCreditAmount) : "",
+      booster_payment_account_name: nextPaymentAccount,
+      booster_payment_synced_account: nextPaymentAmount > 0 ? nextPaymentAccount : "",
+      booster_payment_synced_amount: nextPaymentAmount > 0 ? formatAmount(nextPaymentAmount) : ""
+    },
+    ledger_entries_added: pendingEntries.length
+  };
+}
+
 function normalizeContact(contact = {}) {
   return {
     name: clean(contact.name),
@@ -125,6 +377,24 @@ function normalize(body = {}, existing = {}) {
     booster_credit_status: has("booster_credit_status")
       ? clean(body.booster_credit_status).toLowerCase()
       : clean(existing.booster_credit_status).toLowerCase(),
+
+    booster_account_name: has("booster_account_name")
+      ? clean(body.booster_account_name)
+      : clean(existing.booster_account_name),
+
+    booster_credit_amount: has("booster_credit_amount")
+      ? clean(body.booster_credit_amount)
+      : clean(existing.booster_credit_amount),
+
+    booster_credit_synced_account: clean(existing.booster_credit_synced_account),
+    booster_credit_synced_amount: clean(existing.booster_credit_synced_amount),
+
+    booster_payment_account_name: has("booster_payment_account_name")
+      ? clean(body.booster_payment_account_name)
+      : clean(existing.booster_payment_account_name),
+
+    booster_payment_synced_account: clean(existing.booster_payment_synced_account),
+    booster_payment_synced_amount: clean(existing.booster_payment_synced_amount),
 
     payment_received_type: has("payment_received_type")
       ? clean(body.payment_received_type)
@@ -601,8 +871,11 @@ export default async function handler(req, res) {
         metafield_contacts: metafieldData.metafield_contacts,
         order_contacts: metafieldData.order_contacts,
         organizations: metafieldData.organizations,
+        booster_account_name: clean(saved?.booster_account_name),
         booster_credit_percentage: clean(saved?.booster_credit_percentage),
-        booster_credit_status: clean(saved?.booster_credit_status)
+        booster_credit_status: clean(saved?.booster_credit_status),
+        booster_credit_amount: clean(saved?.booster_credit_amount),
+        booster_payment_account_name: clean(saved?.booster_payment_account_name)
       };
 
       res.status(200).json({ ok: true, data: merged });
@@ -621,10 +894,18 @@ export default async function handler(req, res) {
     }
 
     const existing = await readPrivateJson(orderId).catch(() => null);
-const normalized = normalize(req.body, existing || {});
+    const shopifyOrder = await getOrderById(shop, token, orderId);
+    const normalized = normalize(req.body, existing || {});
+    const boosterSync = await syncBoosterLedger({
+      existing: existing || {},
+      normalized,
+      orderId,
+      orderTotal: getOrderTotalFromShopifyOrder(shopifyOrder)
+    });
+    const finalNormalized = boosterSync.normalized;
     const path = getPath(orderId);
 
-    await put(path, JSON.stringify(normalized, null, 2), {
+    await put(path, JSON.stringify(finalNormalized, null, 2), {
       access: "private",
       contentType: "application/json",
       token: process.env.BLOB_READ_WRITE_TOKEN,
@@ -634,17 +915,16 @@ const normalized = normalize(req.body, existing || {});
 
     const syncResults = {
       saved_to_blob: true,
+      booster_ledger_sync: { ok: true, entries_added: boosterSync.ledger_entries_added },
       shopify_paid_sync: null,
       shopify_fulfillment_sync: null
     };
 
-    const paymentStatus = clean(normalized.internal_payment_status).toLowerCase();
-    const orderStatus = clean(normalized.internal_order_status).toLowerCase();
+    const paymentStatus = clean(finalNormalized.internal_payment_status).toLowerCase();
+    const orderStatus = clean(finalNormalized.internal_order_status).toLowerCase();
 
     const shouldMarkPaid = paymentStatus === "payment received" || paymentStatus === "partial payment";
     const shouldFulfill = orderStatus === "order complete";
-
-    const shopifyOrder = await getOrderById(shop, token, orderId);
 
     if (shouldMarkPaid && clean(shopifyOrder.financial_status).toLowerCase() !== "paid") {
       try {
@@ -669,7 +949,7 @@ const normalized = normalize(req.body, existing || {});
     res.status(200).json({
       ok: true,
       order_id: orderId,
-      data: normalized,
+      data: finalNormalized,
       sync: syncResults
     });
     return;
