@@ -535,37 +535,19 @@ async function getOrderContactMeta(shop, token, orderId) {
           reference {
             ... on Metaobject {
               id
-              handle
-              type
-              displayName
               fields {
                 key
                 value
-                reference {
-                  ... on Metaobject {
-                    id
-                    handle
-                    type
-                    displayName
-                    fields {
-                      key
-                      value
-                    }
-                  }
-                }
-                references(first: 20) {
-                  nodes {
-                    ... on Metaobject {
-                      id
-                      handle
-                      type
-                      displayName
-                      fields {
-                        key
-                        value
-                      }
-                    }
-                  }
+              }
+            }
+          }
+          references(first: 10) {
+            nodes {
+              ... on Metaobject {
+                id
+                fields {
+                  key
+                  value
                 }
               }
             }
@@ -578,8 +560,44 @@ async function getOrderContactMeta(shop, token, orderId) {
   const data = await shopifyGraphQL(shop, token, query, {
     id: `gid://shopify/Order/${orderId}`
   });
+  const metafield = data?.order?.metafield;
+  if (!metafield) {
+    return emptyMetafieldContactPayload();
+  }
 
-  return buildMetafieldContactPayload(data?.order?.metafield?.reference);
+  let nodes = [];
+  if (Array.isArray(metafield?.references?.nodes) && metafield.references.nodes.length) {
+    nodes = metafield.references.nodes;
+  } else if (metafield?.reference) {
+    nodes = [metafield.reference];
+  }
+
+  const contacts = nodes.map((node) => {
+    const fields = fieldMapFromMetaobject(node);
+    return normalizeContact({
+      name: clean(fields.name?.value),
+      email: clean(fields.email?.value),
+      phone: clean(fields.phone_number?.value || fields.phone?.value),
+      organization: clean(fields.organization?.value),
+      title: "",
+      role: ""
+    });
+  }).filter((contact) => contact.name || contact.email || contact.phone || contact.organization);
+
+  const primaryContact = contacts[0] || null;
+  return {
+    custom_customer_name: clean(primaryContact?.name),
+    custom_customer_email: clean(primaryContact?.email),
+    custom_customer_phone: clean(primaryContact?.phone),
+    client_contacts: contacts,
+    contact_cards: contacts,
+    contacts,
+    custom_contacts: [],
+    metafield_contacts: contacts,
+    dashboard_contacts: [],
+    order_contacts: contacts,
+    organizations: [...new Set(contacts.map((contact) => clean(contact.organization)).filter(Boolean))]
+  };
 }
 
 async function fetchOrderContactMetaMap(shop, token, orderIds = []) {
