@@ -496,7 +496,21 @@ async function getOrderContactMeta(shop, token, orderId) {
   });
 
   const contactMeta = data?.order?.metafield?.reference;
-  if (!contactMeta) return null;
+  if (!contactMeta) {
+    return {
+      custom_customer_name: "",
+      custom_customer_email: "",
+      custom_customer_phone: "",
+      client_contacts: [],
+      contact_cards: [],
+      contacts: [],
+      custom_contacts: [],
+      metafield_contacts: [],
+      dashboard_contacts: [],
+      order_contacts: [],
+      organizations: []
+    };
+  }
 
   const fields = fieldMapFromMetaobject(contactMeta);
   const name = clean(
@@ -533,7 +547,7 @@ async function getOrderContactMeta(shop, token, orderId) {
     }
   }
 
-  return normalizeContact({
+  const primaryContact = normalizeContact({
     name,
     email,
     phone,
@@ -541,6 +555,24 @@ async function getOrderContactMeta(shop, token, orderId) {
     title: "",
     role: ""
   });
+
+  const contacts = primaryContact.name || primaryContact.email || primaryContact.phone
+    ? [primaryContact]
+    : [];
+
+  return {
+    custom_customer_name: name,
+    custom_customer_email: email,
+    custom_customer_phone: phone,
+    client_contacts: contacts,
+    contact_cards: contacts,
+    contacts,
+    custom_contacts: [],
+    metafield_contacts: contacts,
+    dashboard_contacts: [],
+    order_contacts: contacts,
+    organizations
+  };
 }
 
 async function fetchOrderMetafields(shop, token, orderId) {
@@ -643,7 +675,12 @@ async function fetchProductTagsByIds(shop, token, productIds) {
 
 function mapOrder(order, saved = {}, extras = {}) {
   const metafieldContact = extras.metafieldContact || null;
-  const metafieldContacts = metafieldContact ? [normalizeContact(metafieldContact)] : [];
+  const metafieldContacts = normalizeContactsFromAny(
+    metafieldContact?.metafield_contacts ||
+      metafieldContact?.client_contacts ||
+      metafieldContact?.contact_cards ||
+      metafieldContact?.contacts
+  );
   const savedContacts = getSavedContacts(saved);
   const contacts = metafieldContacts.length ? metafieldContacts : savedContacts;
   const orderTags = getOrderTags(order);
@@ -678,7 +715,13 @@ function mapOrder(order, saved = {}, extras = {}) {
   const organizations = getOrganizations(
     saved?.organizations && parseJsonSafe(saved.organizations, saved.organizations)
       ? saved
-      : { ...saved, organizations: extras.metafieldOrganizations || [] },
+      : {
+          ...saved,
+          organizations:
+            extras.metafieldOrganizations ||
+            metafieldContact?.organizations ||
+            []
+        },
     contacts
   );
 
@@ -731,17 +774,20 @@ function mapOrder(order, saved = {}, extras = {}) {
 
     custom_customer_name:
       clean(saved.custom_customer_name) ||
-      clean(metafieldContact?.name) ||
+      clean(metafieldContact?.custom_customer_name) ||
+      clean(metafieldContacts[0]?.name) ||
       getShopifyCustomerName(order),
 
     custom_customer_email:
       clean(saved.custom_customer_email) ||
-      clean(metafieldContact?.email) ||
+      clean(metafieldContact?.custom_customer_email) ||
+      clean(metafieldContacts[0]?.email) ||
       getShopifyCustomerEmail(order),
 
     custom_customer_phone:
       clean(saved.custom_customer_phone) ||
-      clean(metafieldContact?.phone) ||
+      clean(metafieldContact?.custom_customer_phone) ||
+      clean(metafieldContacts[0]?.phone) ||
       getShopifyCustomerPhone(order),
 
     prepared_for: clean(saved.prepared_for) || getPreparedForFromShopify(order),
