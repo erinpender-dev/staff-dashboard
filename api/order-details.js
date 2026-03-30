@@ -172,24 +172,34 @@ async function syncBoosterLedger({ existing = {}, normalized, orderId, orderTota
   const balances = getLedgerBalances(ledgerEntries);
   const pendingEntries = [];
 
+<<<<<<< HEAD
   const existingCreditAccount = clean(
     existing.booster_credit_synced_account || existing.booster_account_name
   );
   const existingCreditAmount = parseAmount(
     existing.booster_credit_synced_amount || existing.booster_credit_amount
   );
+=======
+  const existingCreditAccount = clean(existing.booster_credit_synced_account);
+  const existingCreditAmount = parseAmount(existing.booster_credit_synced_amount);
+>>>>>>> 44dbd6f37b5fa309c0a3ea33ff690d94691aa69a
   const nextCreditAccount = clean(normalized.booster_account_name);
   const nextCreditAmount =
     normalizeLower(normalized.booster_credit_status) === "approved" && nextCreditAccount
       ? getBoosterCreditAmount(orderTotal, normalized.booster_credit_percentage)
       : 0;
 
+<<<<<<< HEAD
   const existingPaymentAccount = clean(
     existing.booster_payment_synced_account || existing.booster_payment_account_name
   );
   const existingPaymentAmount = parseAmount(
     existing.booster_payment_synced_amount || existing.payment_received_amount
   );
+=======
+  const existingPaymentAccount = clean(existing.booster_payment_synced_account);
+  const existingPaymentAmount = parseAmount(existing.booster_payment_synced_amount);
+>>>>>>> 44dbd6f37b5fa309c0a3ea33ff690d94691aa69a
   const nextPaymentAccount =
     normalizeLower(normalized.payment_received_type) === "booster club"
       ? clean(normalized.booster_payment_account_name || normalized.booster_account_name)

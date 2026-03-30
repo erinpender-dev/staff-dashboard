@@ -746,9 +746,6 @@ export default async function handler(req, res) {
     const orders = await Promise.all(
       rawOrders.map(async (order) => {
         let saved = null;
-        let metafieldContact = null;
-        let metafieldOrganizations = [];
-        let shopifyReference = "";
 
         try {
           saved = await readPrivateJson(order.id);
@@ -756,30 +753,10 @@ export default async function handler(req, res) {
           saved = null;
         }
 
-        try {
-          const metafields = await fetchOrderMetafields(shop, token, order.id);
-          const ids = parseMetaobjectIdsFromMetafieldValue(
-            metafields?.clientContactInformation?.value
-          );
-
-          const metaobjects = await fetchMetaobjectsByIds(shop, token, ids);
-          metafieldContact = parseClientContactMetaobject(metaobjects[0] || null);
-
-          if (metafieldContact?.organization) {
-            metafieldOrganizations = [metafieldContact.organization];
-          }
-
-          shopifyReference = clean(metafields?.reference?.value);
-        } catch (error) {
-          metafieldContact = null;
-          metafieldOrganizations = [];
-          shopifyReference = "";
-        }
-
         return mapOrder(order, saved || {}, {
-          metafieldContact,
-          metafieldOrganizations,
-          shopifyReference,
+          metafieldContact: null,
+          metafieldOrganizations: [],
+          shopifyReference: "",
           productTagsById
         });
       })
