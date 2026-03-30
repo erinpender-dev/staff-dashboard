@@ -439,77 +439,25 @@ function organizationFromMetaobject(metaobject) {
   };
 }
 
-async function getOrderContactMeta(shop, token, orderId) {
-  const query = `
-    query OrderContactInfo($id: ID!) {
-      order(id: $id) {
-        id
-        metafield(namespace: "custom", key: "client_contact_information") {
-          id
-          type
-          value
-          reference {
-            ... on Metaobject {
-              id
-              handle
-              type
-              displayName
-              fields {
-                key
-                value
-                reference {
-                  ... on Metaobject {
-                    id
-                    handle
-                    type
-                    displayName
-                    fields {
-                      key
-                      value
-                    }
-                  }
-                }
-                references(first: 20) {
-                  nodes {
-                    ... on Metaobject {
-                      id
-                      handle
-                      type
-                      displayName
-                      fields {
-                        key
-                        value
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
+function emptyMetafieldContactPayload() {
+  return {
+    custom_customer_name: "",
+    custom_customer_email: "",
+    custom_customer_phone: "",
+    client_contacts: [],
+    contact_cards: [],
+    contacts: [],
+    custom_contacts: [],
+    metafield_contacts: [],
+    dashboard_contacts: [],
+    order_contacts: [],
+    organizations: []
+  };
+}
 
-  const data = await shopifyGraphQL(shop, token, query, {
-    id: `gid://shopify/Order/${orderId}`
-  });
-
-  const contactMeta = data?.order?.metafield?.reference;
+function buildMetafieldContactPayload(contactMeta) {
   if (!contactMeta) {
-    return {
-      custom_customer_name: "",
-      custom_customer_email: "",
-      custom_customer_phone: "",
-      client_contacts: [],
-      contact_cards: [],
-      contacts: [],
-      custom_contacts: [],
-      metafield_contacts: [],
-      dashboard_contacts: [],
-      order_contacts: [],
-      organizations: []
-    };
+    return emptyMetafieldContactPayload();
   }
 
   const fields = fieldMapFromMetaobject(contactMeta);
@@ -573,6 +521,83 @@ async function getOrderContactMeta(shop, token, orderId) {
     order_contacts: contacts,
     organizations
   };
+}
+
+async function fetchOrderContactMetaMap(shop, token, orderIds = []) {
+  const cleanIds = [...new Set(orderIds.map((id) => clean(id)).filter(Boolean))];
+  if (!cleanIds.length) return {};
+
+  const result = {};
+  const chunkSize = 25;
+
+  for (let index = 0; index < cleanIds.length; index += chunkSize) {
+    const chunk = cleanIds.slice(index, index + chunkSize);
+    const query = `
+      query OrderContactInfoBatch($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Order {
+            id
+            metafield(namespace: "custom", key: "client_contact_information") {
+              id
+              type
+              value
+              reference {
+                ... on Metaobject {
+                  id
+                  handle
+                  type
+                  displayName
+                  fields {
+                    key
+                    value
+                    reference {
+                      ... on Metaobject {
+                        id
+                        handle
+                        type
+                        displayName
+                        fields {
+                          key
+                          value
+                        }
+                      }
+                    }
+                    references(first: 20) {
+                      nodes {
+                        ... on Metaobject {
+                          id
+                          handle
+                          type
+                          displayName
+                          fields {
+                            key
+                            value
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyGraphQL(shop, token, query, {
+      ids: chunk.map((id) => `gid://shopify/Order/${id}`)
+    });
+
+    const nodes = Array.isArray(data?.nodes) ? data.nodes.filter(Boolean) : [];
+    for (const node of nodes) {
+      const numericId = clean(node?.id).split("/").pop();
+      if (!numericId) continue;
+      result[numericId] = buildMetafieldContactPayload(node?.metafield?.reference);
+    }
+  }
+
+  return result;
 }
 
 async function fetchOrderMetafields(shop, token, orderId) {
@@ -920,10 +945,15 @@ export default async function handler(req, res) {
       )
     );
 
+    const metafieldContactsByOrderId = await fetchOrderContactMetaMap(
+      shop,
+      token,
+      rawOrders.map((order) => order.id)
+    ).catch(() => ({}));
+
     const orders = await Promise.all(
       rawOrders.map(async (order) => {
         let saved = null;
-        let metafieldContact = null;
 
         try {
           saved = await readPrivateJson(order.id);
@@ -931,14 +961,8 @@ export default async function handler(req, res) {
           saved = null;
         }
 
-        try {
-          metafieldContact = await getOrderContactMeta(shop, token, order.id);
-        } catch (error) {
-          metafieldContact = null;
-        }
-
         return mapOrder(order, saved || {}, {
-          metafieldContact,
+          metafieldContact: metafieldContactsByOrderId[String(order.id)] || emptyMetafieldContactPayload(),
           metafieldOrganizations: [],
           shopifyReference: "",
           productTagsById
