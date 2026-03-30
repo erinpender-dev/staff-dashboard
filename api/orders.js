@@ -33,6 +33,25 @@ function normalizeContact(contact = {}) {
   };
 }
 
+const ORG_TAGS = [
+  "sta",
+  "sjs",
+  "slu",
+  "hope house",
+  "rise",
+  "personal",
+  "other clients"
+];
+
+function normalizeTagValue(value) {
+  return clean(value).toLowerCase();
+}
+
+function detectOrgTagsFromValues(values = []) {
+  const normalized = values.map((value) => normalizeTagValue(value)).filter(Boolean);
+  return ORG_TAGS.filter((tag) => normalized.includes(tag));
+}
+
 function normalizeContactsFromAny(value) {
   const parsed = parseJsonSafe(value, value);
   if (!Array.isArray(parsed)) return [];
@@ -257,6 +276,26 @@ function getOrderTags(order) {
     .filter(Boolean);
 }
 
+function getOrderChannel(order) {
+  return getManualOrderFlag(order) ? "manual" : "web";
+}
+
+function getBoosterCreditDefaults(saved, orgTags, order) {
+  const hasSta = orgTags.includes("sta");
+  const orderChannel = getOrderChannel(order);
+  const savedStatus = clean(saved?.booster_credit_status);
+  const savedPercentage = clean(saved?.booster_credit_percentage);
+
+  return {
+    booster_credit_percentage: hasSta ? savedPercentage : "",
+    booster_credit_status:
+      hasSta
+        ? (savedStatus || (orderChannel === "web" ? "needs review/approval" : ""))
+        : "",
+    booster_credit_needs_review: hasSta && orderChannel === "web" && !savedStatus
+  };
+}
+
 function buildSearchText(order) {
   return [
     order.order_number,
@@ -442,11 +481,69 @@ async function fetchMetaobjectsByIds(shop, token, ids) {
   return Array.isArray(data?.nodes) ? data.nodes.filter(Boolean) : [];
 }
 
+async function fetchProductTagsByIds(shop, token, productIds) {
+  if (!Array.isArray(productIds) || !productIds.length) return {};
+
+  const ids = [...new Set(productIds.map((id) => clean(id)).filter(Boolean))]
+    .map((id) => `gid://shopify/Product/${id}`);
+
+  if (!ids.length) return {};
+
+  const query = `
+    query GetProductTags($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          tags
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, { ids });
+  const nodes = Array.isArray(data?.nodes) ? data.nodes.filter(Boolean) : [];
+
+  return nodes.reduce((acc, product) => {
+    const numericId = clean(product?.id).split("/").pop();
+    if (!numericId) return acc;
+    acc[numericId] = Array.isArray(product?.tags) ? product.tags.map((tag) => clean(tag)).filter(Boolean) : [];
+    return acc;
+  }, {});
+}
+
 function mapOrder(order, saved = {}, extras = {}) {
   const metafieldContact = extras.metafieldContact || null;
   const metafieldContacts = metafieldContact ? [normalizeContact(metafieldContact)] : [];
   const savedContacts = getSavedContacts(saved);
   const contacts = savedContacts.length ? savedContacts : metafieldContacts;
+  const orderTags = getOrderTags(order);
+  const lineItems = Array.isArray(order.line_items)
+    ? order.line_items.map((item) => {
+        const productTags = Array.isArray(extras.productTagsById?.[String(item.product_id)])
+          ? extras.productTagsById[String(item.product_id)]
+          : [];
+
+        return {
+          id: item.id,
+          variant_id: item.variant_id,
+          product_id: item.product_id,
+          sku: clean(item.sku),
+          title: clean(item.title),
+          variant_title: clean(item.variant_title),
+          vendor: clean(item.vendor),
+          quantity: Number(item.quantity || 0),
+          price: clean(item.price),
+          fulfillable_quantity: Number(item.fulfillable_quantity || 0),
+          fulfillment_status: clean(item.fulfillment_status),
+          product_tags: productTags,
+          org_tags: detectOrgTagsFromValues(productTags)
+        };
+      })
+    : [];
+  const lineItemOrgTags = lineItems.flatMap((item) => item.org_tags || []);
+  const orderLevelOrgTags = detectOrgTagsFromValues(orderTags);
+  const orgTags = [...new Set([...lineItemOrgTags, ...orderLevelOrgTags])];
+  const boosterDefaults = getBoosterCreditDefaults(saved, orgTags, order);
 
   const organizations = getOrganizations(
     saved?.organizations && parseJsonSafe(saved.organizations, saved.organizations)
@@ -486,24 +583,12 @@ function mapOrder(order, saved = {}, extras = {}) {
     gateway: clean(order.gateway),
     note: clean(order.note),
 
-    tags: getOrderTags(order),
+    tags: [...new Set([...orderTags, ...orgTags])],
+    order_tags: [...new Set([...orderTags, ...orgTags])],
+    org_tags: orgTags,
     manual_order: getManualOrderFlag(order),
-
-    line_items: Array.isArray(order.line_items)
-      ? order.line_items.map((item) => ({
-          id: item.id,
-          variant_id: item.variant_id,
-          product_id: item.product_id,
-          sku: clean(item.sku),
-          title: clean(item.title),
-          variant_title: clean(item.variant_title),
-          vendor: clean(item.vendor),
-          quantity: Number(item.quantity || 0),
-          price: clean(item.price),
-          fulfillable_quantity: Number(item.fulfillable_quantity || 0),
-          fulfillment_status: clean(item.fulfillment_status)
-        }))
-      : [],
+    order_channel: getOrderChannel(order),
+    line_items: lineItems,
 
     shipping_address: order.shipping_address || null,
     billing_address: order.billing_address || null,
@@ -546,6 +631,9 @@ function mapOrder(order, saved = {}, extras = {}) {
     payment_received_check_number: clean(saved.payment_received_check_number),
     partial_payments: getPartialPayments(saved),
     payment_details_missing: paymentDetailsMissing,
+    booster_credit_percentage: boosterDefaults.booster_credit_percentage,
+    booster_credit_status: boosterDefaults.booster_credit_status,
+    booster_credit_needs_review: boosterDefaults.booster_credit_needs_review,
 
     client_contacts: savedContacts.length ? savedContacts : metafieldContacts,
     contact_cards: savedContacts.length ? savedContacts : metafieldContacts,
@@ -642,6 +730,16 @@ export default async function handler(req, res) {
       fulfillmentStatus
     });
 
+    const productTagsById = await fetchProductTagsByIds(
+      shop,
+      token,
+      rawOrders.flatMap((order) =>
+        Array.isArray(order.line_items)
+          ? order.line_items.map((item) => item.product_id)
+          : []
+      )
+    );
+
     const orders = await Promise.all(
       rawOrders.map(async (order) => {
         let saved = null;
@@ -678,7 +776,8 @@ export default async function handler(req, res) {
         return mapOrder(order, saved || {}, {
           metafieldContact,
           metafieldOrganizations,
-          shopifyReference
+          shopifyReference,
+          productTagsById
         });
       })
     );
