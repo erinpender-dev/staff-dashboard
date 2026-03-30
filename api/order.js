@@ -265,6 +265,11 @@ export default async function handler(req, res) {
 subtotal_price: order.current_subtotal_price ?? order.subtotal_price,
 total_discounts: order.current_total_discounts ?? order.total_discounts,
 total_tax: order.current_total_tax ?? order.total_tax,
+
+current_total_price: order.current_total_price ?? order.total_price,
+current_subtotal_price: order.current_subtotal_price ?? order.subtotal_price,
+current_total_discounts: order.current_total_discounts ?? order.total_discounts,
+current_total_tax: order.current_total_tax ?? order.total_tax,
       currency: order.currency,
       tags: order.tags || "",
       note: order.note || "",
