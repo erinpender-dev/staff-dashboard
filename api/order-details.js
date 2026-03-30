@@ -118,6 +118,14 @@ function normalize(body = {}, existing = {}) {
       ? clean(body.internal_payment_status).toLowerCase()
       : clean(existing.internal_payment_status).toLowerCase(),
 
+    booster_credit_percentage: has("booster_credit_percentage")
+      ? clean(body.booster_credit_percentage)
+      : clean(existing.booster_credit_percentage),
+
+    booster_credit_status: has("booster_credit_status")
+      ? clean(body.booster_credit_status).toLowerCase()
+      : clean(existing.booster_credit_status).toLowerCase(),
+
     payment_received_type: has("payment_received_type")
       ? clean(body.payment_received_type)
       : clean(existing.payment_received_type),
@@ -592,7 +600,9 @@ export default async function handler(req, res) {
         contacts: metafieldData.contacts,
         metafield_contacts: metafieldData.metafield_contacts,
         order_contacts: metafieldData.order_contacts,
-        organizations: metafieldData.organizations
+        organizations: metafieldData.organizations,
+        booster_credit_percentage: clean(saved?.booster_credit_percentage),
+        booster_credit_status: clean(saved?.booster_credit_status)
       };
 
       res.status(200).json({ ok: true, data: merged });
