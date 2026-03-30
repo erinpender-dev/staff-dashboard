@@ -523,6 +523,65 @@ function buildMetafieldContactPayload(contactMeta) {
   };
 }
 
+async function getOrderContactMeta(shop, token, orderId) {
+  const query = `
+    query OrderContactInfo($id: ID!) {
+      order(id: $id) {
+        id
+        metafield(namespace: "custom", key: "client_contact_information") {
+          id
+          type
+          value
+          reference {
+            ... on Metaobject {
+              id
+              handle
+              type
+              displayName
+              fields {
+                key
+                value
+                reference {
+                  ... on Metaobject {
+                    id
+                    handle
+                    type
+                    displayName
+                    fields {
+                      key
+                      value
+                    }
+                  }
+                }
+                references(first: 20) {
+                  nodes {
+                    ... on Metaobject {
+                      id
+                      handle
+                      type
+                      displayName
+                      fields {
+                        key
+                        value
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, {
+    id: `gid://shopify/Order/${orderId}`
+  });
+
+  return buildMetafieldContactPayload(data?.order?.metafield?.reference);
+}
+
 async function fetchOrderContactMetaMap(shop, token, orderIds = []) {
   const cleanIds = [...new Set(orderIds.map((id) => clean(id)).filter(Boolean))];
   if (!cleanIds.length) return {};
@@ -954,6 +1013,8 @@ export default async function handler(req, res) {
     const orders = await Promise.all(
       rawOrders.map(async (order) => {
         let saved = null;
+        let metafieldContact =
+          metafieldContactsByOrderId[String(order.id)] || emptyMetafieldContactPayload();
 
         try {
           saved = await readPrivateJson(order.id);
@@ -961,8 +1022,16 @@ export default async function handler(req, res) {
           saved = null;
         }
 
+        if (!metafieldContact.client_contacts?.length) {
+          try {
+            metafieldContact = await getOrderContactMeta(shop, token, order.id);
+          } catch (error) {
+            metafieldContact = metafieldContact || emptyMetafieldContactPayload();
+          }
+        }
+
         return mapOrder(order, saved || {}, {
-          metafieldContact: metafieldContactsByOrderId[String(order.id)] || emptyMetafieldContactPayload(),
+          metafieldContact,
           metafieldOrganizations: [],
           shopifyReference: "",
           productTagsById
