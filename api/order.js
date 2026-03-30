@@ -264,7 +264,8 @@ function getTaggedSubtotal(order, targetTag) {
     return sum + getLineItemFinalTotal(item);
   }, 0);
 }
-
+  console.log("REQ URL:", req.url);
+  console.log("REQ QUERY:", req.query);
 export default async function handler(req, res) {
   setCors(req, res);
 
