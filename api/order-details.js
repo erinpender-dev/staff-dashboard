@@ -13,6 +13,11 @@ function clean(value) {
   return String(value).trim();
 }
 
+function cleanMoney(value) {
+  if (value === null || value === undefined || value === "") return "";
+  return String(value).replace(/[^0-9.-]/g, "").trim();
+}
+
 function parseJsonSafe(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
   if (Array.isArray(value) || typeof value === "object") return value;
@@ -133,6 +138,22 @@ function normalize(body = {}, existing = {}) {
     partial_payments: has("partial_payments")
       ? normalizePartialPayments(body.partial_payments)
       : normalizePartialPayments(existing.partial_payments),
+
+    booster_status: has("booster_status")
+      ? clean(body.booster_status).toLowerCase()
+      : clean(existing.booster_status).toLowerCase(),
+
+    booster_percent: has("booster_percent")
+      ? cleanMoney(body.booster_percent)
+      : cleanMoney(existing.booster_percent),
+
+    booster_eligible_subtotal: has("booster_eligible_subtotal")
+      ? cleanMoney(body.booster_eligible_subtotal)
+      : cleanMoney(existing.booster_eligible_subtotal),
+
+    booster_credit_amount: has("booster_credit_amount")
+      ? cleanMoney(body.booster_credit_amount)
+      : cleanMoney(existing.booster_credit_amount),
 
     client_contacts: has("client_contacts")
       ? normalizeContacts(body.client_contacts)
@@ -611,7 +632,7 @@ export default async function handler(req, res) {
     }
 
     const existing = await readPrivateJson(orderId).catch(() => null);
-const normalized = normalize(req.body, existing || {});
+    const normalized = normalize(req.body, existing || {});
     const path = getPath(orderId);
 
     await put(path, JSON.stringify(normalized, null, 2), {
