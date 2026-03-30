@@ -631,9 +631,12 @@ function mapOrder(order, saved = {}, extras = {}) {
     payment_received_check_number: clean(saved.payment_received_check_number),
     partial_payments: getPartialPayments(saved),
     payment_details_missing: paymentDetailsMissing,
+    booster_account_name: clean(saved.booster_account_name),
     booster_credit_percentage: boosterDefaults.booster_credit_percentage,
     booster_credit_status: boosterDefaults.booster_credit_status,
     booster_credit_needs_review: boosterDefaults.booster_credit_needs_review,
+    booster_credit_amount: clean(saved.booster_credit_amount),
+    booster_payment_account_name: clean(saved.booster_payment_account_name),
 
     client_contacts: savedContacts.length ? savedContacts : metafieldContacts,
     contact_cards: savedContacts.length ? savedContacts : metafieldContacts,
