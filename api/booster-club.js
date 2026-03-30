@@ -77,11 +77,33 @@ function summarizeAccounts(accounts = [], entries = []) {
     return acc;
   }, {});
 
-  return accounts
-    .map((account) => ({
+  const knownAccounts = new Map();
+
+  accounts.forEach((account) => {
+    const key = clean(account?.name).toLowerCase();
+    if (!key) return;
+    knownAccounts.set(key, {
       ...account,
       balance: Number((balances[clean(account.name)] || 0).toFixed(2))
-    }))
+    });
+  });
+
+  Object.keys(balances).forEach((accountName) => {
+    const key = clean(accountName).toLowerCase();
+    if (!key || knownAccounts.has(key)) return;
+
+    knownAccounts.set(key, {
+      name: accountName,
+      organization: "sta",
+      status: "active",
+      notes: "",
+      created_at: "",
+      updated_at: "",
+      balance: Number((balances[accountName] || 0).toFixed(2))
+    });
+  });
+
+  return [...knownAccounts.values()]
     .sort((a, b) => clean(a.name).localeCompare(clean(b.name)));
 }
 
