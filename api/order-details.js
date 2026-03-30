@@ -166,46 +166,36 @@ function buildLedgerEntry({
   };
 }
 
-async function syncBoosterLedger({ existing = {}, normalized, orderId, orderTotal }) {
+async function syncBoosterLedger({ existing = {}, normalized, orderId, orderTotal, syncPayment = true }) {
   let accounts = await readBoosterAccounts();
   let ledgerEntries = await readBoosterLedger();
   const balances = getLedgerBalances(ledgerEntries);
   const pendingEntries = [];
 
-<<<<<<< HEAD
   const existingCreditAccount = clean(
     existing.booster_credit_synced_account || existing.booster_account_name
   );
   const existingCreditAmount = parseAmount(
     existing.booster_credit_synced_amount || existing.booster_credit_amount
   );
-=======
-  const existingCreditAccount = clean(existing.booster_credit_synced_account);
-  const existingCreditAmount = parseAmount(existing.booster_credit_synced_amount);
->>>>>>> 44dbd6f37b5fa309c0a3ea33ff690d94691aa69a
   const nextCreditAccount = clean(normalized.booster_account_name);
   const nextCreditAmount =
     normalizeLower(normalized.booster_credit_status) === "approved" && nextCreditAccount
       ? getBoosterCreditAmount(orderTotal, normalized.booster_credit_percentage)
       : 0;
 
-<<<<<<< HEAD
   const existingPaymentAccount = clean(
     existing.booster_payment_synced_account || existing.booster_payment_account_name
   );
   const existingPaymentAmount = parseAmount(
     existing.booster_payment_synced_amount || existing.payment_received_amount
   );
-=======
-  const existingPaymentAccount = clean(existing.booster_payment_synced_account);
-  const existingPaymentAmount = parseAmount(existing.booster_payment_synced_amount);
->>>>>>> 44dbd6f37b5fa309c0a3ea33ff690d94691aa69a
   const nextPaymentAccount =
-    normalizeLower(normalized.payment_received_type) === "booster club"
+    syncPayment && normalizeLower(normalized.payment_received_type) === "booster club"
       ? clean(normalized.booster_payment_account_name || normalized.booster_account_name)
       : "";
   const nextPaymentAmount =
-    normalizeLower(normalized.payment_received_type) === "booster club"
+    syncPayment && normalizeLower(normalized.payment_received_type) === "booster club"
       ? parseAmount(normalized.payment_received_amount)
       : 0;
 
@@ -242,7 +232,7 @@ async function syncBoosterLedger({ existing = {}, normalized, orderId, orderTota
     balances[nextCreditAccount] = (balances[nextCreditAccount] || 0) + nextCreditAmount;
   }
 
-  if (existingPaymentAccount && existingPaymentAmount > 0) {
+  if (syncPayment && existingPaymentAccount && existingPaymentAmount > 0) {
     pendingEntries.push(
       buildLedgerEntry({
         type: "payment_reversal",
@@ -255,7 +245,7 @@ async function syncBoosterLedger({ existing = {}, normalized, orderId, orderTota
     balances[existingPaymentAccount] = (balances[existingPaymentAccount] || 0) + existingPaymentAmount;
   }
 
-  if (nextPaymentAccount && nextPaymentAmount > 0) {
+  if (syncPayment && nextPaymentAccount && nextPaymentAmount > 0) {
     const available = balances[nextPaymentAccount] || 0;
     if (available < nextPaymentAmount) {
       throw new Error(`Booster account "${nextPaymentAccount}" only has $${formatAmount(available)} available.`);
@@ -286,9 +276,13 @@ async function syncBoosterLedger({ existing = {}, normalized, orderId, orderTota
       booster_credit_amount: nextCreditAmount > 0 ? formatAmount(nextCreditAmount) : "",
       booster_credit_synced_account: nextCreditAmount > 0 ? nextCreditAccount : "",
       booster_credit_synced_amount: nextCreditAmount > 0 ? formatAmount(nextCreditAmount) : "",
-      booster_payment_account_name: nextPaymentAccount,
-      booster_payment_synced_account: nextPaymentAmount > 0 ? nextPaymentAccount : "",
-      booster_payment_synced_amount: nextPaymentAmount > 0 ? formatAmount(nextPaymentAmount) : ""
+      booster_payment_account_name: syncPayment ? nextPaymentAccount : clean(existing.booster_payment_account_name),
+      booster_payment_synced_account: syncPayment
+        ? (nextPaymentAmount > 0 ? nextPaymentAccount : "")
+        : clean(existing.booster_payment_synced_account),
+      booster_payment_synced_amount: syncPayment
+        ? (nextPaymentAmount > 0 ? formatAmount(nextPaymentAmount) : "")
+        : clean(existing.booster_payment_synced_amount)
     },
     ledger_entries_added: pendingEntries.length
   };
@@ -920,11 +914,13 @@ export default async function handler(req, res) {
     const existing = await readPrivateJson(orderId).catch(() => null);
     const shopifyOrder = await getOrderById(shop, token, orderId);
     const normalized = normalize(req.body, existing || {});
+    const saveScope = clean(req.body?.save_scope);
     const boosterSync = await syncBoosterLedger({
       existing: existing || {},
       normalized,
       orderId,
-      orderTotal: getOrderTotalFromShopifyOrder(shopifyOrder)
+      orderTotal: getOrderTotalFromShopifyOrder(shopifyOrder),
+      syncPayment: saveScope !== "booster_credit"
     });
     const finalNormalized = boosterSync.normalized;
     const path = getPath(orderId);
