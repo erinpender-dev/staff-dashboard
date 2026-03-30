@@ -658,7 +658,7 @@ async function getOrderContactMeta(shop, token, orderId) {
   );
 
   const organizations = [];
-  const orgField = fields.organizations;
+  const orgField = fields.organization || fields.organizations;
 
   if (Array.isArray(orgField?.references?.nodes) && orgField.references.nodes.length) {
     for (const node of orgField.references.nodes) {
