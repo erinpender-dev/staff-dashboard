@@ -16,6 +16,25 @@ function unique(values = []) {
   return [...new Set(values.filter(Boolean))];
 }
 
+const ORG_TAGS = [
+  "sta",
+  "sjs",
+  "slu",
+  "hope house",
+  "rise",
+  "personal",
+  "other clients"
+];
+
+function normalizeTagValue(value) {
+  return clean(value).toLowerCase();
+}
+
+function detectOrgTagsFromValues(values = []) {
+  const normalized = values.map((value) => normalizeTagValue(value)).filter(Boolean);
+  return ORG_TAGS.filter((tag) => normalized.includes(tag));
+}
+
 function getPath(orderId) {
   return `order-details/${orderId}.json`;
 }
@@ -165,6 +184,66 @@ async function fetchOrderContacts(shop, token, orderId) {
   }
 }
 
+async function fetchProductTagsByIds(shop, token, productIds) {
+  const ids = [...new Set((productIds || []).map((id) => clean(id)).filter(Boolean))]
+    .map((id) => `gid://shopify/Product/${id}`);
+
+  if (!ids.length) return {};
+
+  const query = `
+    query GetProductTags($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          tags
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, { ids });
+  const nodes = Array.isArray(data?.nodes) ? data.nodes.filter(Boolean) : [];
+
+  return nodes.reduce((acc, product) => {
+    const numericId = clean(product?.id).split("/").pop();
+    if (!numericId) return acc;
+    acc[numericId] = Array.isArray(product?.tags) ? product.tags.map((tag) => clean(tag)).filter(Boolean) : [];
+    return acc;
+  }, {});
+}
+
+function isManualOrder(order) {
+  const sourceName = clean(order?.source_name).toLowerCase();
+  return sourceName === "shopify_draft_order" || sourceName === "manual";
+}
+
+function getOrderChannel(order) {
+  return isManualOrder(order) ? "manual" : "web";
+}
+
+function getOrderTags(order) {
+  return clean(order?.tags)
+    .split(",")
+    .map((tag) => clean(tag))
+    .filter(Boolean);
+}
+
+function getBoosterCreditDefaults(saved, orgTags, order) {
+  const hasSta = orgTags.includes("sta");
+  const orderChannel = getOrderChannel(order);
+  const savedStatus = clean(saved?.booster_credit_status);
+  const savedPercentage = clean(saved?.booster_credit_percentage);
+
+  return {
+    booster_credit_percentage: hasSta ? savedPercentage : "",
+    booster_credit_status:
+      hasSta
+        ? (savedStatus || (orderChannel === "web" ? "needs review/approval" : ""))
+        : "",
+    booster_credit_needs_review: hasSta && orderChannel === "web" && !savedStatus
+  };
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
 
@@ -219,6 +298,11 @@ export default async function handler(req, res) {
 
     const saved = (await readPrivateJson(orderId)) || {};
     const contactData = await fetchOrderContacts(shop, token, orderId);
+    const productTagsById = await fetchProductTagsByIds(
+      shop,
+      token,
+      (order.line_items || []).map((item) => item.product_id)
+    );
 
     const shopifyCustomerName =
       order.customer
@@ -253,6 +337,55 @@ export default async function handler(req, res) {
       })?.value || "";
 
     const primaryContact = contactData.client_contacts[0] || {};
+    const orderTags = getOrderTags(order);
+    const lineItems = (order.line_items || [])
+      .map((item) => {
+        const productTags = Array.isArray(productTagsById[String(item.product_id)])
+          ? productTagsById[String(item.product_id)]
+          : [];
+
+        const rawCurrentQty =
+          item.current_quantity ??
+          item.fulfillable_quantity ??
+          item.quantity;
+
+        const qty = Number(rawCurrentQty) || 0;
+
+        return {
+          id: item.id,
+          title: item.title,
+          variant_title: item.variant_title,
+          sku: item.sku,
+          quantity: item.quantity,
+          current_quantity: item.current_quantity ?? null,
+          fulfillable_quantity: item.fulfillable_quantity ?? null,
+          vendor: item.vendor,
+          price: item.price,
+          original_price: item.original_price ?? item.price,
+          total_discount: item.total_discount,
+          final_line_price:
+            item.final_line_price ??
+            item.current_total_price ??
+            (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+          current_total_price:
+            item.current_total_price ??
+            (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+          is_removed: qty <= 0,
+          product_tags: productTags,
+          org_tags: detectOrgTagsFromValues(productTags)
+        };
+      })
+      .filter((item) => {
+        if (item.current_quantity !== null) return Number(item.current_quantity) > 0;
+        if (item.fulfillable_quantity !== null) return Number(item.fulfillable_quantity) > 0;
+        return Number(item.quantity) > 0;
+      });
+
+    const orgTags = [...new Set([
+      ...lineItems.flatMap((item) => item.org_tags || []),
+      ...detectOrgTagsFromValues(orderTags)
+    ])];
+    const boosterDefaults = getBoosterCreditDefaults(saved, orgTags, order);
 
     const merged = {
       id: order.id,
@@ -271,8 +404,12 @@ current_subtotal_price: order.current_subtotal_price ?? order.subtotal_price,
 current_total_discounts: order.current_total_discounts ?? order.total_discounts,
 current_total_tax: order.current_total_tax ?? order.total_tax,
       currency: order.currency,
-      tags: order.tags || "",
+      tags: [...new Set([...orderTags, ...orgTags])],
+      order_tags: [...new Set([...orderTags, ...orgTags])],
+      org_tags: orgTags,
       note: order.note || "",
+      manual_order: isManualOrder(order),
+      order_channel: getOrderChannel(order),
 
       shopify_customer_name: clean(shopifyCustomerName),
       shopify_customer_email: clean(shopifyCustomerEmail),
@@ -308,6 +445,9 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
 
       internal_order_status: clean(saved.internal_order_status),
       internal_payment_status: clean(saved.internal_payment_status),
+      booster_credit_percentage: boosterDefaults.booster_credit_percentage,
+      booster_credit_status: boosterDefaults.booster_credit_status,
+      booster_credit_needs_review: boosterDefaults.booster_credit_needs_review,
 
       custom_updated_at: clean(saved.updated_at),
 
@@ -317,42 +457,7 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
       shipping_address: order.shipping_address || null,
       billing_address: order.billing_address || null,
 
-      line_items: (order.line_items || [])
-        .map((item) => {
-          const rawCurrentQty =
-            item.current_quantity ??
-            item.fulfillable_quantity ??
-            item.quantity;
-
-          const qty = Number(rawCurrentQty) || 0;
-
-          return {
-            id: item.id,
-            title: item.title,
-            variant_title: item.variant_title,
-            sku: item.sku,
-            quantity: item.quantity,
-            current_quantity: item.current_quantity ?? null,
-            fulfillable_quantity: item.fulfillable_quantity ?? null,
-            vendor: item.vendor,
-            price: item.price,
-            original_price: item.original_price ?? item.price,
-            total_discount: item.total_discount,
-            final_line_price:
-              item.final_line_price ??
-              item.current_total_price ??
-              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
-            current_total_price:
-              item.current_total_price ??
-              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
-            is_removed: qty <= 0
-          };
-        })
-        .filter((item) => {
-          if (item.current_quantity !== null) return Number(item.current_quantity) > 0;
-          if (item.fulfillable_quantity !== null) return Number(item.fulfillable_quantity) > 0;
-          return Number(item.quantity) > 0;
-        })
+      line_items: lineItems
     };
 
     return res.status(200).json({ order: merged });
