@@ -49,10 +49,12 @@ async function readPrivateJson(orderId) {
 
   const url = `${baseUrl}/${getPath(orderId)}`;
 
-  const response = await fetch(url, {
+  const response = await fetch(`${url}?ts=${Date.now()}`, {
     headers: {
-      Authorization: `Bearer ${token}`
-    }
+      Authorization: `Bearer ${token}`,
+      "Cache-Control": "no-cache"
+    },
+    cache: "no-store"
   });
 
   if (response.status === 404) {
@@ -445,9 +447,12 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
 
       internal_order_status: clean(saved.internal_order_status),
       internal_payment_status: clean(saved.internal_payment_status),
+      booster_account_name: clean(saved.booster_account_name),
       booster_credit_percentage: boosterDefaults.booster_credit_percentage,
       booster_credit_status: boosterDefaults.booster_credit_status,
       booster_credit_needs_review: boosterDefaults.booster_credit_needs_review,
+      booster_credit_amount: clean(saved.booster_credit_amount),
+      booster_payment_account_name: clean(saved.booster_payment_account_name),
 
       custom_updated_at: clean(saved.updated_at),
 
