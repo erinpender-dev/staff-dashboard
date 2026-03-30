@@ -107,6 +107,14 @@ function summarizeAccounts(accounts = [], entries = []) {
     .sort((a, b) => clean(a.name).localeCompare(clean(b.name)));
 }
 
+function sortLedgerEntries(entries = []) {
+  return [...entries].sort((a, b) => {
+    const timeDiff = new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return clean(b.id).localeCompare(clean(a.id));
+  });
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
 
@@ -120,7 +128,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: true,
         accounts: summarizeAccounts(accounts, entries),
-        entries: entries.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        entries: sortLedgerEntries(entries)
       });
     }
 
