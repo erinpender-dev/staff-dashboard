@@ -517,7 +517,7 @@ function mapOrder(order, saved = {}, extras = {}) {
   const metafieldContact = extras.metafieldContact || null;
   const metafieldContacts = metafieldContact ? [normalizeContact(metafieldContact)] : [];
   const savedContacts = getSavedContacts(saved);
-  const contacts = savedContacts.length ? savedContacts : metafieldContacts;
+  const contacts = metafieldContacts.length ? metafieldContacts : savedContacts;
   const orderTags = getOrderTags(order);
   const lineItems = Array.isArray(order.line_items)
     ? order.line_items.map((item) => {
@@ -641,13 +641,13 @@ function mapOrder(order, saved = {}, extras = {}) {
     booster_credit_amount: clean(saved.booster_credit_amount),
     booster_payment_account_name: clean(saved.booster_payment_account_name),
 
-    client_contacts: savedContacts.length ? savedContacts : metafieldContacts,
-    contact_cards: savedContacts.length ? savedContacts : metafieldContacts,
+    client_contacts: metafieldContacts.length ? metafieldContacts : savedContacts,
+    contact_cards: metafieldContacts.length ? metafieldContacts : savedContacts,
     contacts,
     custom_contacts: normalizeContactsFromAny(saved?.custom_contacts),
     metafield_contacts: metafieldContacts,
     dashboard_contacts: normalizeContactsFromAny(saved?.dashboard_contacts),
-    order_contacts: savedContacts.length ? savedContacts : metafieldContacts,
+    order_contacts: metafieldContacts.length ? metafieldContacts : savedContacts,
 
     organizations,
 
