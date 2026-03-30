@@ -913,6 +913,11 @@ function mapOrder(order, saved = {}, extras = {}) {
   };
 
   mapped._search = buildSearchText(mapped);
+
+  if (extras.debugContact) {
+    mapped._debug_contact = extras.debugContact;
+  }
+
   return mapped;
 }
 
@@ -984,6 +989,7 @@ export default async function handler(req, res) {
     const fulfillmentStatus = clean(req.query.fulfillment_status || "");
     const financialStatus = clean(req.query.financial_status || "");
     const limit = Number(req.query.limit || 100);
+    const debugOrderId = clean(req.query.debug_order_id || "");
 
     const rawOrders = await fetchOrdersFromShopify({
       shop,
@@ -1015,6 +1021,14 @@ export default async function handler(req, res) {
         let saved = null;
         let metafieldContact =
           metafieldContactsByOrderId[String(order.id)] || emptyMetafieldContactPayload();
+        const debugContact = String(order.id) === debugOrderId
+          ? {
+              order_id: String(order.id),
+              batched_contact: metafieldContact,
+              fallback_contact: null,
+              saved_contacts: null
+            }
+          : null;
 
         try {
           saved = await readPrivateJson(order.id);
@@ -1022,10 +1036,28 @@ export default async function handler(req, res) {
           saved = null;
         }
 
+        if (debugContact) {
+          debugContact.saved_contacts = {
+            client_contacts: normalizeContactsFromAny(saved?.client_contacts),
+            contact_cards: normalizeContactsFromAny(saved?.contact_cards),
+            contacts: normalizeContactsFromAny(saved?.contacts),
+            metafield_contacts: normalizeContactsFromAny(saved?.metafield_contacts || saved?.contact_metafield)
+          };
+        }
+
         if (!metafieldContact.client_contacts?.length) {
           try {
-            metafieldContact = await getOrderContactMeta(shop, token, order.id);
+            const fallbackContact = await getOrderContactMeta(shop, token, order.id);
+            if (debugContact) {
+              debugContact.fallback_contact = fallbackContact;
+            }
+            metafieldContact = fallbackContact;
           } catch (error) {
+            if (debugContact) {
+              debugContact.fallback_contact = {
+                error: error.message || "Unknown fallback lookup error"
+              };
+            }
             metafieldContact = metafieldContact || emptyMetafieldContactPayload();
           }
         }
@@ -1034,7 +1066,8 @@ export default async function handler(req, res) {
           metafieldContact,
           metafieldOrganizations: [],
           shopifyReference: "",
-          productTagsById
+          productTagsById,
+          debugContact
         });
       })
     );
