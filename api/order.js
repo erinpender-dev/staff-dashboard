@@ -312,15 +312,42 @@ export default async function handler(req, res) {
       shipping_address: order.shipping_address || null,
       billing_address: order.billing_address || null,
 
-      line_items: (order.line_items || []).map((item) => ({
-        id: item.id,
-        title: item.title,
-        variant_title: item.variant_title,
-        sku: item.sku,
-        quantity: item.quantity,
-        vendor: item.vendor,
-        price: item.price
-      }))
+      line_items: (order.line_items || [])
+        .map((item) => {
+          const rawCurrentQty =
+            item.current_quantity ??
+            item.fulfillable_quantity ??
+            item.quantity;
+
+          const qty = Number(rawCurrentQty) || 0;
+
+          return {
+            id: item.id,
+            title: item.title,
+            variant_title: item.variant_title,
+            sku: item.sku,
+            quantity: item.quantity,
+            current_quantity: item.current_quantity ?? null,
+            fulfillable_quantity: item.fulfillable_quantity ?? null,
+            vendor: item.vendor,
+            price: item.price,
+            original_price: item.original_price ?? item.price,
+            total_discount: item.total_discount,
+            final_line_price:
+              item.final_line_price ??
+              item.current_total_price ??
+              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+            current_total_price:
+              item.current_total_price ??
+              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+            is_removed: qty <= 0
+          };
+        })
+        .filter((item) => {
+          if (item.current_quantity !== null) return Number(item.current_quantity) > 0;
+          if (item.fulfillable_quantity !== null) return Number(item.fulfillable_quantity) > 0;
+          return Number(item.quantity) > 0;
+        })
     };
 
     return res.status(200).json({ order: merged });
