@@ -499,9 +499,22 @@ async function getOrderContactMeta(shop, token, orderId) {
   if (!contactMeta) return null;
 
   const fields = fieldMapFromMetaobject(contactMeta);
-  const name = clean(fields.name?.value);
-  const email = clean(fields.email?.value);
-  const phone = clean(fields.phone_number?.value);
+  const name = clean(
+    fields.name?.value ||
+    fields.full_name?.value ||
+    fields.contact_name?.value ||
+    fields.customer_name?.value
+  );
+  const email = clean(
+    fields.email?.value ||
+    fields.email_address?.value ||
+    fields.contact_email?.value
+  );
+  const phone = clean(
+    fields.phone_number?.value ||
+    fields.phone?.value ||
+    fields.contact_phone?.value
+  );
 
   const organizations = [];
   const orgField = fields.organizations;
