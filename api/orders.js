@@ -415,6 +415,121 @@ async function shopifyGraphQL(shop, token, query, variables = {}) {
   return json.data;
 }
 
+function fieldMapFromMetaobject(metaobject) {
+  const map = {};
+  const fields = Array.isArray(metaobject?.fields) ? metaobject.fields : [];
+  for (const field of fields) {
+    map[field.key] = field;
+  }
+  return map;
+}
+
+function organizationFromMetaobject(metaobject) {
+  if (!metaobject) return null;
+  const fields = fieldMapFromMetaobject(metaobject);
+
+  return {
+    id: clean(metaobject.id),
+    handle: clean(metaobject.handle),
+    name:
+      clean(fields.name?.value) ||
+      clean(fields.title?.value) ||
+      clean(fields.label?.value) ||
+      clean(metaobject.displayName)
+  };
+}
+
+async function getOrderContactMeta(shop, token, orderId) {
+  const query = `
+    query OrderContactInfo($id: ID!) {
+      order(id: $id) {
+        id
+        metafield(namespace: "custom", key: "client_contact_information") {
+          id
+          type
+          value
+          reference {
+            ... on Metaobject {
+              id
+              handle
+              type
+              displayName
+              fields {
+                key
+                value
+                reference {
+                  ... on Metaobject {
+                    id
+                    handle
+                    type
+                    displayName
+                    fields {
+                      key
+                      value
+                    }
+                  }
+                }
+                references(first: 20) {
+                  nodes {
+                    ... on Metaobject {
+                      id
+                      handle
+                      type
+                      displayName
+                      fields {
+                        key
+                        value
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, {
+    id: `gid://shopify/Order/${orderId}`
+  });
+
+  const contactMeta = data?.order?.metafield?.reference;
+  if (!contactMeta) return null;
+
+  const fields = fieldMapFromMetaobject(contactMeta);
+  const name = clean(fields.name?.value);
+  const email = clean(fields.email?.value);
+  const phone = clean(fields.phone_number?.value);
+
+  const organizations = [];
+  const orgField = fields.organizations;
+
+  if (Array.isArray(orgField?.references?.nodes) && orgField.references.nodes.length) {
+    for (const node of orgField.references.nodes) {
+      const org = organizationFromMetaobject(node);
+      if (org?.name || org?.handle || org?.id) {
+        organizations.push(org.name || org.handle || org.id);
+      }
+    }
+  } else if (orgField?.reference) {
+    const org = organizationFromMetaobject(orgField.reference);
+    if (org?.name || org?.handle || org?.id) {
+      organizations.push(org.name || org.handle || org.id);
+    }
+  }
+
+  return normalizeContact({
+    name,
+    email,
+    phone,
+    organization: organizations[0] || "",
+    title: "",
+    role: ""
+  });
+}
+
 async function fetchOrderMetafields(shop, token, orderId) {
   const query = `
     query GetOrderMetafields($id: ID!) {
@@ -749,6 +864,7 @@ export default async function handler(req, res) {
     const orders = await Promise.all(
       rawOrders.map(async (order) => {
         let saved = null;
+        let metafieldContact = null;
 
         try {
           saved = await readPrivateJson(order.id);
@@ -756,8 +872,14 @@ export default async function handler(req, res) {
           saved = null;
         }
 
+        try {
+          metafieldContact = await getOrderContactMeta(shop, token, order.id);
+        } catch (error) {
+          metafieldContact = null;
+        }
+
         return mapOrder(order, saved || {}, {
-          metafieldContact: null,
+          metafieldContact,
           metafieldOrganizations: [],
           shopifyReference: "",
           productTagsById
