@@ -36,8 +36,14 @@ async function readPrivateJson(orderId) {
     }
   });
 
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(await response.text());
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Blob read failed: ${text}`);
+  }
 
   return await response.json();
 }
@@ -52,14 +58,24 @@ async function shopifyGraphQL(shop, token, query, variables = {}) {
     body: JSON.stringify({ query, variables })
   });
 
-  const data = await response.json();
-  if (data.errors?.length) throw new Error(JSON.stringify(data.errors));
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Shopify GraphQL error: ${text}`);
+  }
+
+  const data = JSON.parse(text);
+
+  if (data.errors?.length) {
+    throw new Error(`Shopify GraphQL errors: ${JSON.stringify(data.errors)}`);
+  }
 
   return data.data;
 }
 
 function parseMetaobjectFields(metaobject) {
   if (!metaobject?.fields) return {};
+
   return metaobject.fields.reduce((acc, field) => {
     acc[field.key] = field.value || "";
     return acc;
@@ -71,11 +87,32 @@ async function fetchOrderContacts(shop, token, orderId) {
     const gid = `gid://shopify/Order/${orderId}`;
 
     const query = `
-      query ($id: ID!) {
+      query OrderContactInfo($id: ID!) {
         order(id: $id) {
+          id
           metafield(namespace: "custom", key: "client_contact_information") {
-            reference { ... on Metaobject { fields { key value } } }
-            references(first: 10) { nodes { ... on Metaobject { fields { key value } } } }
+            value
+            type
+            reference {
+              ... on Metaobject {
+                id
+                fields {
+                  key
+                  value
+                }
+              }
+            }
+            references(first: 10) {
+              nodes {
+                ... on Metaobject {
+                  id
+                  fields {
+                    key
+                    value
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -84,132 +121,49 @@ async function fetchOrderContacts(shop, token, orderId) {
     const data = await shopifyGraphQL(shop, token, query, { id: gid });
     const metafield = data?.order?.metafield;
 
-    let nodes = [];
-    if (metafield?.references?.nodes?.length) nodes = metafield.references.nodes;
-    else if (metafield?.reference) nodes = [metafield.reference];
+    if (!metafield) {
+      return {
+        client_contacts: [],
+        organizations: []
+      };
+    }
 
-    const contacts = nodes.map(node => {
+    let nodes = [];
+
+    if (metafield.references?.nodes?.length) {
+      nodes = metafield.references.nodes;
+    } else if (metafield.reference) {
+      nodes = [metafield.reference];
+    }
+
+    const contacts = nodes.map((node) => {
       const fields = parseMetaobjectFields(node);
+
       return {
         name: clean(fields.name),
-        phone: clean(fields.phone_number || fields.phone),
+        phone: clean(fields.phone),
         email: clean(fields.email),
-        organization: clean(fields.organizations || fields.organization)
+        organization: clean(fields.organization)
       };
+    }).filter((contact) => {
+      return contact.name || contact.phone || contact.email || contact.organization;
     });
+
+    const organizations = unique(
+      contacts.map((contact) => clean(contact.organization))
+    );
 
     return {
       client_contacts: contacts,
-      organizations: unique(contacts.map(c => c.organization))
+      organizations
     };
-  } catch {
-    return { client_contacts: [], organizations: [] };
+  } catch (error) {
+    return {
+      client_contacts: [],
+      organizations: []
+    };
   }
 }
-
-/* =========================
-   BOOSTER / ORG LOGIC
-========================= */
-
-const RECOGNIZED_ORG_TAGS = ["STA", "SLU", "SJS", "RISE", "HOPE HOUSE"];
-const BOOSTER_ELIGIBLE_TAG = "STA";
-
-function isWebsiteOrder(order) {
-  const source = String(order.source_name || "").toLowerCase();
-  const tags = String(order.tags || "").toLowerCase();
-
-  if (tags.includes("manual") || tags.includes("draft")) return false;
-  if (source === "shopify_draft_order") return false;
-
-  return source === "web";
-}
-
-function normalizeTags(tags) {
-  return String(tags || "")
-    .split(",")
-    .map(t => t.trim().toUpperCase())
-    .filter(Boolean);
-}
-
-function parseAmount(v) {
-  return Number(String(v || 0).replace(/[^0-9.-]/g, "")) || 0;
-}
-
-function getLineQty(item) {
-  return parseAmount(
-    item.current_quantity ??
-    item.fulfillable_quantity ??
-    item.quantity ??
-    0
-  );
-}
-
-function getLineTotal(item) {
-  const finalLine =
-    parseAmount(item.final_line_price) ||
-    parseAmount(item.current_total_price);
-
-  if (finalLine > 0) return finalLine;
-
-  const unitPrice =
-    parseAmount(item.price) ||
-    parseAmount(item.original_price) ||
-    0;
-
-  const qty = getLineQty(item);
-  const discount = parseAmount(item.total_discount) || 0;
-
-  return Math.max(0, unitPrice * qty - discount);
-}
-
-function getFoundOrgTags(items) {
-  const found = new Set();
-
-  items.forEach(item => {
-    const tags = normalizeTags(item.product_tags);
-    RECOGNIZED_ORG_TAGS.forEach(org => {
-      if (tags.includes(org)) found.add(org);
-    });
-  });
-
-  return [...found];
-}
-
-function getOrgFromItems(items) {
-  const found = getFoundOrgTags(items);
-
-  if (found.length === 1) return found[0];
-  if (found.length > 1) return "Manual Review";
-  return "";
-}
-
-function getSubtotalByTag(items, tag) {
-  const normalizedTag = String(tag || "").trim().toUpperCase();
-
-  return items.reduce((sum, item) => {
-    const tags = normalizeTags(item.product_tags);
-    if (!tags.includes(normalizedTag)) return sum;
-    return sum + getLineTotal(item);
-  }, 0);
-}
-
-function toPercentNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
-
-  const raw = parseAmount(value);
-
-  if (!Number.isFinite(raw)) return null;
-
-  // supports either 10 or 0.10
-  if (raw > 0 && raw <= 1) return raw;
-  return raw / 100;
-}
-
-function roundMoney(value) {
-  return Math.round((Number(value) || 0) * 100) / 100;
-}
-
-/* ========================= */
 
 export default async function handler(req, res) {
   setCors(req, res);
@@ -226,19 +180,39 @@ export default async function handler(req, res) {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
   const orderId = req.query.id;
 
-  if (!orderId) return res.status(400).json({ error: "Missing order id" });
+  if (!shop || !token) {
+    return res.status(500).json({
+      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
+    });
+  }
+
+  if (!orderId) {
+    return res.status(400).json({ error: "Missing order id" });
+  }
 
   try {
     const response = await fetch(
-      `https://${shop}/admin/api/2025-10/orders/${orderId}.json?status=any`,
-      { headers: { "X-Shopify-Access-Token": token } }
+      `https://${shop}/admin/api/2025-10/orders/${encodeURIComponent(orderId)}.json?status=any`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json"
+        }
+      }
     );
 
+    const text = await response.text();
+
     if (!response.ok) {
-      throw new Error(`Shopify order fetch failed: ${response.status} ${await response.text()}`);
+      return res.status(response.status).json({
+        error: "Shopify API error",
+        details: text
+      });
     }
 
-    const { order } = await response.json();
+    const data = JSON.parse(text);
+    const order = data.order;
+
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
     }
@@ -246,90 +220,146 @@ export default async function handler(req, res) {
     const saved = (await readPrivateJson(orderId)) || {};
     const contactData = await fetchOrderContacts(shop, token, orderId);
 
-    /* ===== PRODUCT TAG FETCH ===== */
-    const productTagsById = {};
-    const ids = [...new Set(order.line_items.map(i => i.product_id).filter(Boolean))];
+    const shopifyCustomerName =
+      order.customer
+        ? [order.customer.first_name, order.customer.last_name]
+            .filter(Boolean)
+            .join(" ")
+        : order.billing_address?.name ||
+          order.shipping_address?.name ||
+          "No customer name";
 
-    await Promise.all(
-      ids.map(async id => {
-        try {
-          const r = await fetch(
-            `https://${shop}/admin/api/2025-10/products/${id}.json?fields=id,tags`,
-            { headers: { "X-Shopify-Access-Token": token } }
-          );
+    const shopifyCustomerEmail =
+      order.email ||
+      order.customer?.email ||
+      order.contact_email ||
+      "";
 
-          if (!r.ok) return;
-          const data = await r.json();
-          productTagsById[id] = data.product?.tags || "";
-        } catch {
-          // ignore individual product tag lookup failures
-        }
-      })
-    );
+    const shopifyCustomerPhone =
+      order.phone ||
+      order.billing_address?.phone ||
+      order.shipping_address?.phone ||
+      order.customer?.phone ||
+      "";
 
-    /* ===== BUILD LINE ITEMS ===== */
-    const line_items = order.line_items.map(item => ({
-      ...item,
-      product_tags: productTagsById[item.product_id] || ""
-    }));
+    const shopifyPreparedFor =
+      order.note_attributes?.find((attr) => {
+        const name = (attr.name || "").toLowerCase();
+        return (
+          name === "athlete name & sport" ||
+          name === "student info" ||
+          name === "prepared for"
+        );
+      })?.value || "";
 
-    /* ===== ORG + BOOSTER ===== */
-    const isWeb = isWebsiteOrder(order);
-    const orgFromItems = isWeb ? getOrgFromItems(line_items) : "";
-    const foundOrgTags = isWeb ? getFoundOrgTags(line_items) : [];
-
-    const staEligibleSubtotal = isWeb
-      ? getSubtotalByTag(line_items, BOOSTER_ELIGIBLE_TAG)
-      : 0;
-
-    const savedPercentRaw = saved.booster_percent ?? "";
-    const boosterPercentDecimal = toPercentNumber(savedPercentRaw);
-
-    const computedBoosterAmount =
-      isWeb && staEligibleSubtotal > 0 && boosterPercentDecimal !== null
-        ? roundMoney(staEligibleSubtotal * boosterPercentDecimal)
-        : 0;
-
-    const defaultBoosterStatus = !isWeb
-      ? "not eligible"
-      : foundOrgTags.length > 1
-        ? "manual review"
-        : foundOrgTags.includes("STA")
-          ? "needs approval"
-          : "not eligible";
+    const primaryContact = contactData.client_contacts[0] || {};
 
     const merged = {
       id: order.id,
       name: order.name,
+      order_number: order.order_number,
+      created_at: order.created_at,
+      financial_status: order.financial_status,
+      fulfillment_status: order.fulfillment_status || "unfulfilled",
+      total_price: order.current_total_price ?? order.total_price,
+subtotal_price: order.current_subtotal_price ?? order.subtotal_price,
+total_discounts: order.current_total_discounts ?? order.total_discounts,
+total_tax: order.current_total_tax ?? order.total_tax,
+
+current_total_price: order.current_total_price ?? order.total_price,
+current_subtotal_price: order.current_subtotal_price ?? order.subtotal_price,
+current_total_discounts: order.current_total_discounts ?? order.total_discounts,
+current_total_tax: order.current_total_tax ?? order.total_tax,
+      currency: order.currency,
       tags: order.tags || "",
+      note: order.note || "",
 
-      is_website_order: isWeb,
+      shopify_customer_name: clean(shopifyCustomerName),
+      shopify_customer_email: clean(shopifyCustomerEmail),
+      shopify_customer_phone: clean(shopifyCustomerPhone),
+      shopify_prepared_for: clean(shopifyPreparedFor),
 
-      // org tagging logic
-      organization_tag: saved.organization_tag || orgFromItems,
-      recognized_org_tags: foundOrgTags,
-      suggested_order_tags: foundOrgTags,
+      custom_customer_name: clean(saved.custom_customer_name),
+      custom_customer_email: clean(saved.custom_customer_email),
+      custom_customer_phone: clean(saved.custom_customer_phone),
 
-      // booster logic
-      booster_status: saved.booster_status || defaultBoosterStatus,
-      booster_percent: savedPercentRaw,
-      booster_percent_decimal: boosterPercentDecimal,
-      booster_eligible_subtotal: saved.booster_eligible_subtotal ?? staEligibleSubtotal,
-      booster_credit_amount:
-        saved.booster_credit_amount !== undefined &&
-        saved.booster_credit_amount !== null &&
-        saved.booster_credit_amount !== ""
-          ? parseAmount(saved.booster_credit_amount)
-          : computedBoosterAmount,
-      booster_is_sta_eligible: isWeb && staEligibleSubtotal > 0,
+      customer_name:
+        clean(saved.custom_customer_name) ||
+        clean(primaryContact.name) ||
+        clean(shopifyCustomerName),
 
-      line_items,
+      customer_email:
+        clean(saved.custom_customer_email) ||
+        clean(primaryContact.email) ||
+        clean(shopifyCustomerEmail),
+
+      customer_phone:
+        clean(saved.custom_customer_phone) ||
+        clean(primaryContact.phone) ||
+        clean(shopifyCustomerPhone),
+
+      prepared_for: clean(saved.prepared_for) || clean(shopifyPreparedFor),
+
+      school: clean(saved.school),
+      sent_with: clean(saved.sent_with),
+      delivery_notes: clean(saved.delivery_notes),
+      staff_notes: clean(saved.staff_notes),
+      production_notes: clean(saved.production_notes),
+
+      internal_order_status: clean(saved.internal_order_status),
+      internal_payment_status: clean(saved.internal_payment_status),
+
+      custom_updated_at: clean(saved.updated_at),
+
       client_contacts: contactData.client_contacts,
-      organizations: contactData.organizations
+      organizations: contactData.organizations,
+
+      shipping_address: order.shipping_address || null,
+      billing_address: order.billing_address || null,
+
+      line_items: (order.line_items || [])
+        .map((item) => {
+          const rawCurrentQty =
+            item.current_quantity ??
+            item.fulfillable_quantity ??
+            item.quantity;
+
+          const qty = Number(rawCurrentQty) || 0;
+
+          return {
+            id: item.id,
+            title: item.title,
+            variant_title: item.variant_title,
+            sku: item.sku,
+            quantity: item.quantity,
+            current_quantity: item.current_quantity ?? null,
+            fulfillable_quantity: item.fulfillable_quantity ?? null,
+            vendor: item.vendor,
+            price: item.price,
+            original_price: item.original_price ?? item.price,
+            total_discount: item.total_discount,
+            final_line_price:
+              item.final_line_price ??
+              item.current_total_price ??
+              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+            current_total_price:
+              item.current_total_price ??
+              (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+            is_removed: qty <= 0
+          };
+        })
+        .filter((item) => {
+          if (item.current_quantity !== null) return Number(item.current_quantity) > 0;
+          if (item.fulfillable_quantity !== null) return Number(item.fulfillable_quantity) > 0;
+          return Number(item.quantity) > 0;
+        })
     };
 
     return res.status(200).json({ order: merged });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
+  } catch (error) {
+    return res.status(500).json({
+      error: "Server error",
+      details: error.message
+    });
   }
 }
