@@ -531,7 +531,7 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
 
             line_items: mergedLineItems
     };
-
+console.log("FINAL ORDER:", merged);
     return res.status(200).json({ order: merged });
   } catch (error) {
     return res.status(500).json({
