@@ -230,11 +230,15 @@ function computeInternalOrderStatus(saved, order) {
   const rawSaved = clean(saved?.internal_order_status).toLowerCase();
   const shopifyFulfillment = clean(order.fulfillment_status || "unfulfilled").toLowerCase();
 
+  if (rawSaved) {
+    return rawSaved;
+  }
+
   if (shopifyFulfillment === "fulfilled") {
     return "order complete";
   }
 
-  return rawSaved || "";
+  return "";
 }
 
 function computeInternalPaymentStatus(saved, order) {
