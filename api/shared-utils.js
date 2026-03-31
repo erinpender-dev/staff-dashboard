@@ -1,10 +1,23 @@
 export function setCors(req, res, methods = "GET, OPTIONS") {
-  const allowedOrigin = process.env.ALLOWED_ORIGIN || "*";
+  const requestOrigin = req?.headers?.origin || "";
+  const configuredOrigins = String(process.env.ALLOWED_ORIGIN || "*")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  let allowedOrigin = "*";
+  if (configuredOrigins.length && !configuredOrigins.includes("*")) {
+    allowedOrigin = configuredOrigins.includes(requestOrigin)
+      ? requestOrigin
+      : configuredOrigins[0];
+  } else if (requestOrigin) {
+    allowedOrigin = requestOrigin;
+  }
 
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", methods);
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
 export function clean(value) {
