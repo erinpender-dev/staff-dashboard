@@ -300,46 +300,6 @@ function getReferencedMetaobjectName(field) {
   return clean(nameField?.value);
 }
 
-function parseClientContactMetaobject(metaobject) {
-  if (!metaobject) return null;
-
-  const fields = metaobjectFieldsToMap(metaobject);
-
-  const contact = {
-    name: clean(fields.name?.value),
-    email: clean(fields.email?.value),
-    phone: clean(fields.phone_number?.value),
-    organization: getReferencedMetaobjectName(fields.organization),
-    title: "",
-    role: ""
-  };
-
-  if (
-    !contact.name &&
-    !contact.email &&
-    !contact.phone &&
-    !contact.organization
-  ) {
-    return null;
-  }
-
-  return contact;
-}
-
-function parseMetaobjectIdsFromMetafieldValue(value) {
-  const parsed = parseJsonSafe(value, []);
-
-  if (Array.isArray(parsed)) {
-    return parsed.map((id) => clean(id)).filter(Boolean);
-  }
-
-  if (typeof parsed === "string" && clean(parsed)) {
-    return [clean(parsed)];
-  }
-
-  return [];
-}
-
 async function shopifyGraphQL(shop, token, query, variables = {}) {
   const response = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
     method: "POST",
@@ -643,74 +603,6 @@ async function fetchOrderContactMetaMap(shop, token, orderIds = []) {
   }
 
   return result;
-}
-
-async function fetchOrderMetafields(shop, token, orderId) {
-  const query = `
-    query GetOrderMetafields($id: ID!) {
-      node(id: $id) {
-        ... on Order {
-          id
-          clientContactInformation: metafield(namespace: "custom", key: "client_contact_information") {
-            id
-            type
-            value
-          }
-          reference: metafield(namespace: "custom", key: "reference") {
-            id
-            type
-            value
-          }
-        }
-      }
-    }
-  `;
-
-  const data = await shopifyGraphQL(
-    shop,
-    token,
-    query,
-    { id: `gid://shopify/Order/${orderId}` }
-  );
-
-  return {
-    clientContactInformation: data?.node?.clientContactInformation || null,
-    reference: data?.node?.reference || null
-  };
-}
-
-async function fetchMetaobjectsByIds(shop, token, ids) {
-  if (!Array.isArray(ids) || !ids.length) return [];
-
-  const query = `
-    query GetMetaobjectsByIds($ids: [ID!]!) {
-      nodes(ids: $ids) {
-        ... on Metaobject {
-          id
-          type
-          handle
-          fields {
-            key
-            value
-            reference {
-              ... on Metaobject {
-                id
-                type
-                handle
-                fields {
-                  key
-                  value
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
-
-  const data = await shopifyGraphQL(shop, token, query, { ids });
-  return Array.isArray(data?.nodes) ? data.nodes.filter(Boolean) : [];
 }
 
 async function fetchProductTagsByIds(shop, token, productIds) {
