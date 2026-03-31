@@ -438,6 +438,10 @@ function getBoosterCreditDefaults(saved, orgTags, order) {
 
 export default async function handler(req, res) {
   setCors(req, res);
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -449,7 +453,7 @@ export default async function handler(req, res) {
 
   const shop = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
-  const orderId = req.query.id;
+  const orderId = clean(req.query.order_id || req.query.id);
 
   if (!shop || !token) {
     return res.status(500).json({
