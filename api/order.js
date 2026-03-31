@@ -12,8 +12,30 @@ function clean(value) {
   return String(value).trim();
 }
 
+function parseJsonSafe(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (Array.isArray(value) || typeof value === "object") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return fallback;
+  }
+}
+
 function unique(values = []) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function normalizeContact(contact = {}) {
+  return {
+    name: clean(contact.name),
+    email: clean(contact.email),
+    phone: clean(contact.phone),
+    organization: clean(contact.organization),
+    title: clean(contact.title),
+    role: clean(contact.role)
+  };
 }
 
 const ORG_TAGS = [
@@ -33,6 +55,24 @@ function normalizeTagValue(value) {
 function detectOrgTagsFromValues(values = []) {
   const normalized = values.map((value) => normalizeTagValue(value)).filter(Boolean);
   return ORG_TAGS.filter((tag) => normalized.includes(tag));
+}
+
+function normalizeContactsFromAny(value) {
+  const parsed = parseJsonSafe(value, value);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((contact) => normalizeContact(contact))
+    .filter((contact) => {
+      return (
+        contact.name ||
+        contact.email ||
+        contact.phone ||
+        contact.organization ||
+        contact.title ||
+        contact.role
+      );
+    });
 }
 
 function getPath(orderId) {
@@ -95,12 +135,172 @@ async function shopifyGraphQL(shop, token, query, variables = {}) {
 }
 
 function parseMetaobjectFields(metaobject) {
-  if (!metaobject?.fields) return {};
+  const fields = Array.isArray(metaobject?.fields) ? metaobject.fields : [];
 
-  return metaobject.fields.reduce((acc, field) => {
-    acc[field.key] = field.value || "";
+  return fields.reduce((acc, field) => {
+    acc[field.key] = field;
     return acc;
   }, {});
+}
+
+function organizationFromMetaobject(metaobject) {
+  if (!metaobject) return null;
+  const fields = parseMetaobjectFields(metaobject);
+
+  return {
+    id: clean(metaobject.id),
+    handle: clean(metaobject.handle),
+    name:
+      clean(fields.name?.value) ||
+      clean(fields.title?.value) ||
+      clean(fields.label?.value) ||
+      clean(metaobject.displayName)
+  };
+}
+
+function emptyContactPayload() {
+  return {
+    custom_customer_name: "",
+    custom_customer_email: "",
+    custom_customer_phone: "",
+    client_contacts: [],
+    contact_cards: [],
+    contacts: [],
+    custom_contacts: [],
+    metafield_contacts: [],
+    dashboard_contacts: [],
+    order_contacts: [],
+    organizations: []
+  };
+}
+
+function getPreparedForFromShopify(order) {
+  const attrs = Array.isArray(order.note_attributes) ? order.note_attributes : [];
+  const found = attrs.find((attr) => {
+    const name = clean(attr?.name).toLowerCase();
+    return (
+      name === "athlete name & sport" ||
+      name === "student info" ||
+      name === "prepared for"
+    );
+  });
+
+  return clean(found?.value);
+}
+
+function getShopifyCustomerName(order) {
+  if (order.customer) {
+    const fullName = [order.customer.first_name, order.customer.last_name]
+      .filter(Boolean)
+      .join(" ");
+    if (clean(fullName)) return clean(fullName);
+  }
+
+  return clean(
+    order.billing_address?.name ||
+      order.shipping_address?.name ||
+      "No customer name"
+  );
+}
+
+function getShopifyCustomerEmail(order) {
+  return clean(
+    order.email ||
+      order.customer?.email ||
+      order.contact_email ||
+      ""
+  );
+}
+
+function getShopifyCustomerPhone(order) {
+  return clean(
+    order.phone ||
+      order.billing_address?.phone ||
+      order.shipping_address?.phone ||
+      order.customer?.phone ||
+      ""
+  );
+}
+
+function getSavedContacts(saved) {
+  const possibleSources = [
+    saved?.client_contacts,
+    saved?.contact_cards,
+    saved?.contacts,
+    saved?.custom_contacts,
+    saved?.metafield_contacts,
+    saved?.dashboard_contacts,
+    saved?.order_contacts,
+    saved?.contact_metafield,
+    saved?.metafields?.client_contacts,
+    saved?.metafields?.contact_cards,
+    saved?.metafields?.contacts,
+    saved?.custom_data?.client_contacts,
+    saved?.custom_data?.contact_cards,
+    saved?.dashboard_data?.client_contacts,
+    saved?.dashboard_data?.contact_cards
+  ];
+
+  for (const source of possibleSources) {
+    const contacts = normalizeContactsFromAny(source);
+    if (contacts.length) return contacts;
+  }
+
+  return [];
+}
+
+function getOrganizations(saved, contacts) {
+  const possibleSources = [
+    saved?.organizations,
+    saved?.organization,
+    saved?.orgs,
+    saved?.metafields?.organizations,
+    saved?.custom_data?.organizations,
+    saved?.dashboard_data?.organizations
+  ];
+
+  for (const source of possibleSources) {
+    const parsed = parseJsonSafe(source, null);
+
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.map((value) => clean(value)).filter(Boolean);
+    }
+
+    if (typeof parsed === "string" && clean(parsed)) {
+      return [clean(parsed)];
+    }
+  }
+
+  const fromContacts = contacts
+    .map((contact) => clean(contact.organization))
+    .filter(Boolean);
+
+  return [...new Set(fromContacts)];
+}
+
+function computeInternalOrderStatus(saved, order) {
+  const rawSaved = clean(saved?.internal_order_status).toLowerCase();
+  const shopifyFulfillment = clean(order.fulfillment_status || "unfulfilled").toLowerCase();
+
+  if (shopifyFulfillment === "fulfilled") {
+    return "order complete";
+  }
+
+  return rawSaved || "";
+}
+
+function computeInternalPaymentStatus(saved, order) {
+  const rawSaved = clean(saved?.internal_payment_status).toLowerCase();
+  const shopifyFinancial = clean(order.financial_status).toLowerCase();
+
+  if (shopifyFinancial === "paid") {
+    if (rawSaved === "partial payment") {
+      return "partial payment";
+    }
+    return "payment received";
+  }
+
+  return rawSaved || "";
 }
 
 async function fetchOrderContacts(shop, token, orderId) {
@@ -117,9 +317,24 @@ async function fetchOrderContacts(shop, token, orderId) {
             reference {
               ... on Metaobject {
                 id
+                handle
+                type
+                displayName
                 fields {
                   key
                   value
+                  reference {
+                    ... on Metaobject {
+                      id
+                      handle
+                      type
+                      displayName
+                      fields {
+                        key
+                        value
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -127,9 +342,24 @@ async function fetchOrderContacts(shop, token, orderId) {
               nodes {
                 ... on Metaobject {
                   id
+                  handle
+                  type
+                  displayName
                   fields {
                     key
                     value
+                    reference {
+                      ... on Metaobject {
+                        id
+                        handle
+                        type
+                        displayName
+                        fields {
+                          key
+                          value
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -143,10 +373,7 @@ async function fetchOrderContacts(shop, token, orderId) {
     const metafield = data?.order?.metafield;
 
     if (!metafield) {
-      return {
-        client_contacts: [],
-        organizations: []
-      };
+      return emptyContactPayload();
     }
 
     let nodes = [];
@@ -159,13 +386,17 @@ async function fetchOrderContacts(shop, token, orderId) {
 
     const contacts = nodes.map((node) => {
       const fields = parseMetaobjectFields(node);
+      const organizationMetaobject = fields.organization?.reference || null;
+      const organizationName = organizationMetaobject
+        ? (organizationFromMetaobject(organizationMetaobject)?.name || "")
+        : clean(fields.organization?.value);
 
-      return {
-        name: clean(fields.name),
-        phone: clean(fields.phone),
-        email: clean(fields.email),
-        organization: clean(fields.organization)
-      };
+      return normalizeContact({
+        name: clean(fields.name?.value),
+        phone: clean(fields.phone_number?.value || fields.phone?.value),
+        email: clean(fields.email?.value),
+        organization: organizationName
+      });
     }).filter((contact) => {
       return contact.name || contact.phone || contact.email || contact.organization;
     });
@@ -173,16 +404,23 @@ async function fetchOrderContacts(shop, token, orderId) {
     const organizations = unique(
       contacts.map((contact) => clean(contact.organization))
     );
+    const primaryContact = contacts[0] || null;
 
     return {
+      custom_customer_name: clean(primaryContact?.name),
+      custom_customer_email: clean(primaryContact?.email),
+      custom_customer_phone: clean(primaryContact?.phone),
       client_contacts: contacts,
+      contact_cards: contacts,
+      contacts,
+      custom_contacts: [],
+      metafield_contacts: contacts,
+      dashboard_contacts: [],
+      order_contacts: contacts,
       organizations
     };
   } catch (error) {
-    return {
-      client_contacts: [],
-      organizations: []
-    };
+    return emptyContactPayload();
   }
 }
 
@@ -306,39 +544,19 @@ export default async function handler(req, res) {
       (order.line_items || []).map((item) => item.product_id)
     );
 
-    const shopifyCustomerName =
-      order.customer
-        ? [order.customer.first_name, order.customer.last_name]
-            .filter(Boolean)
-            .join(" ")
-        : order.billing_address?.name ||
-          order.shipping_address?.name ||
-          "No customer name";
-
-    const shopifyCustomerEmail =
-      order.email ||
-      order.customer?.email ||
-      order.contact_email ||
-      "";
-
-    const shopifyCustomerPhone =
-      order.phone ||
-      order.billing_address?.phone ||
-      order.shipping_address?.phone ||
-      order.customer?.phone ||
-      "";
-
-    const shopifyPreparedFor =
-      order.note_attributes?.find((attr) => {
-        const name = (attr.name || "").toLowerCase();
-        return (
-          name === "athlete name & sport" ||
-          name === "student info" ||
-          name === "prepared for"
-        );
-      })?.value || "";
-
-    const primaryContact = contactData.client_contacts[0] || {};
+    const shopifyCustomerName = getShopifyCustomerName(order);
+    const shopifyCustomerEmail = getShopifyCustomerEmail(order);
+    const shopifyCustomerPhone = getShopifyCustomerPhone(order);
+    const shopifyPreparedFor = getPreparedForFromShopify(order);
+    const metafieldContacts = normalizeContactsFromAny(
+      contactData?.metafield_contacts ||
+      contactData?.client_contacts ||
+      contactData?.contact_cards ||
+      contactData?.contacts
+    );
+    const savedContacts = getSavedContacts(saved);
+    const contacts = metafieldContacts.length ? metafieldContacts : savedContacts;
+    const primaryContact = contacts[0] || {};
     const orderTags = getOrderTags(order);
     const lineItems = (order.line_items || [])
       .map((item) => {
@@ -388,6 +606,17 @@ export default async function handler(req, res) {
       ...detectOrgTagsFromValues(orderTags)
     ])];
     const boosterDefaults = getBoosterCreditDefaults(saved, orgTags, order);
+    const organizations = getOrganizations(
+      saved?.organizations && parseJsonSafe(saved.organizations, saved.organizations)
+        ? saved
+        : {
+            ...saved,
+            organizations: contactData?.organizations || []
+          },
+      contacts
+    );
+    const internalOrderStatus = computeInternalOrderStatus(saved, order);
+    const internalPaymentStatus = computeInternalPaymentStatus(saved, order);
 
     const merged = {
       id: order.id,
@@ -418,26 +647,41 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
       shopify_customer_phone: clean(shopifyCustomerPhone),
       shopify_prepared_for: clean(shopifyPreparedFor),
 
-      custom_customer_name: clean(saved.custom_customer_name),
-      custom_customer_email: clean(saved.custom_customer_email),
-      custom_customer_phone: clean(saved.custom_customer_phone),
+      custom_customer_name:
+        clean(saved.custom_customer_name) ||
+        clean(contactData?.custom_customer_name) ||
+        clean(metafieldContacts[0]?.name) ||
+        shopifyCustomerName,
+      custom_customer_email:
+        clean(saved.custom_customer_email) ||
+        clean(contactData?.custom_customer_email) ||
+        clean(metafieldContacts[0]?.email) ||
+        shopifyCustomerEmail,
+      custom_customer_phone:
+        clean(saved.custom_customer_phone) ||
+        clean(contactData?.custom_customer_phone) ||
+        clean(metafieldContacts[0]?.phone) ||
+        shopifyCustomerPhone,
 
       customer_name:
         clean(saved.custom_customer_name) ||
+        clean(contactData?.custom_customer_name) ||
         clean(primaryContact.name) ||
-        clean(shopifyCustomerName),
+        shopifyCustomerName,
 
       customer_email:
         clean(saved.custom_customer_email) ||
+        clean(contactData?.custom_customer_email) ||
         clean(primaryContact.email) ||
-        clean(shopifyCustomerEmail),
+        shopifyCustomerEmail,
 
       customer_phone:
         clean(saved.custom_customer_phone) ||
+        clean(contactData?.custom_customer_phone) ||
         clean(primaryContact.phone) ||
-        clean(shopifyCustomerPhone),
+        shopifyCustomerPhone,
 
-      prepared_for: clean(saved.prepared_for) || clean(shopifyPreparedFor),
+      prepared_for: clean(saved.prepared_for) || shopifyPreparedFor,
 
       school: clean(saved.school),
       sent_with: clean(saved.sent_with),
@@ -445,8 +689,8 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
       staff_notes: clean(saved.staff_notes),
       production_notes: clean(saved.production_notes),
 
-      internal_order_status: clean(saved.internal_order_status),
-      internal_payment_status: clean(saved.internal_payment_status),
+      internal_order_status: internalOrderStatus,
+      internal_payment_status: internalPaymentStatus,
       booster_account_name: clean(saved.booster_account_name),
       booster_credit_percentage: boosterDefaults.booster_credit_percentage,
       booster_credit_status: boosterDefaults.booster_credit_status,
@@ -457,8 +701,14 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
 
       custom_updated_at: clean(saved.updated_at),
 
-      client_contacts: contactData.client_contacts,
-      organizations: contactData.organizations,
+      client_contacts: metafieldContacts.length ? metafieldContacts : savedContacts,
+      contact_cards: metafieldContacts.length ? metafieldContacts : savedContacts,
+      contacts,
+      custom_contacts: normalizeContactsFromAny(saved?.custom_contacts),
+      metafield_contacts: metafieldContacts,
+      dashboard_contacts: normalizeContactsFromAny(saved?.dashboard_contacts),
+      order_contacts: metafieldContacts.length ? metafieldContacts : savedContacts,
+      organizations,
 
       shipping_address: order.shipping_address || null,
       billing_address: order.billing_address || null,
