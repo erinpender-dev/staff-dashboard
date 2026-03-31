@@ -1,30 +1,35 @@
 export default async function handler(req, res) {
   const { code, shop } = req.query;
+  const successRedirect = process.env.AUTH_SUCCESS_REDIRECT || process.env.APP_URL || "/";
 
   if (!code || !shop) {
-    res.status(400).send(`
-      <h1>Missing code or shop</h1>
-      <pre>${JSON.stringify(req.query, null, 2)}</pre>
-    `);
+    res.status(400).send("Authentication failed. Missing required callback parameters.");
     return;
   }
 
-  const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      client_id: process.env.SHOPIFY_CLIENT_ID,
-      client_secret: process.env.SHOPIFY_CLIENT_SECRET,
-      code,
-    }),
-  });
+  try {
+    const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_id: process.env.SHOPIFY_CLIENT_ID,
+        client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+        code,
+      }),
+    });
 
-  const data = await response.json();
+    if (!response.ok) {
+      res.status(502).send("Authentication failed during token exchange.");
+      return;
+    }
 
-  res.status(200).send(`
-    <h1>Callback Result</h1>
-    <pre style="white-space: pre-wrap; word-break: break-all;">${JSON.stringify(data, null, 2)}</pre>
-  `);
+    await response.json();
+
+    res.writeHead(302, { Location: successRedirect });
+    res.end();
+  } catch (error) {
+    res.status(500).send("Authentication failed.");
+  }
 }
