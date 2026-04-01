@@ -124,11 +124,13 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
+      const entriesLimit = Math.max(Number.parseInt(req.query?.entries_limit, 10) || 0, 0);
       const [accounts, entries] = await Promise.all([readAccounts(), readLedger()]);
+      const sortedEntries = sortLedgerEntries(entries);
       return res.status(200).json({
         ok: true,
         accounts: summarizeAccounts(accounts, entries),
-        entries: sortLedgerEntries(entries)
+        entries: entriesLimit > 0 ? sortedEntries.slice(0, entriesLimit) : sortedEntries
       });
     }
 
