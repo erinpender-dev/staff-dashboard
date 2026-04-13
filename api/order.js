@@ -81,7 +81,43 @@ async function shopifyGraphQL(shop, token, query, variables = {}) {
 
   return data.data;
 }
+async function fetchAllMetafields(shop, token, orderId) {
+  const query = `
+    query GetOrderMetafields($id: ID!) {
+      order(id: $id) {
+        metafields(first: 100) {
+          edges {
+            node {
+              namespace
+              key
+              value
+            }
+          }
+        }
+      }
+    }
+  `;
 
+  const data = await shopifyGraphQL(shop, token, query, {
+    id: `gid://shopify/Order/${orderId}`
+  });
+
+  const edges = data?.order?.metafields?.edges || [];
+
+  const formatted = {};
+
+  edges.forEach(({ node }) => {
+    const ns = clean(node.namespace);
+    const key = clean(node.key);
+
+    if (!ns || !key) return;
+
+    if (!formatted[ns]) formatted[ns] = {};
+    formatted[ns][key] = node.value;
+  });
+
+  return formatted;
+}
 function parseMetaobjectFields(metaobject) {
   const fields = Array.isArray(metaobject?.fields) ? metaobject.fields : [];
 
@@ -494,6 +530,7 @@ export default async function handler(req, res) {
 
     const saved = (await readPrivateJson(orderId)) || {};
     const contactData = await fetchOrderContacts(shop, token, orderId);
+    const metafields = await fetchAllMetafields(shop, token, orderId);
     const productTagsById = await fetchProductTagsByIds(
       shop,
       token,
@@ -579,6 +616,8 @@ export default async function handler(req, res) {
       name: order.name,
       order_number: order.order_number,
       created_at: order.created_at,
+      metafields,
+work_order_notes: clean(metafields?.custom?.order_notes || ""),
       financial_status: order.financial_status,
       fulfillment_status: order.fulfillment_status || "unfulfilled",
       total_price: order.current_total_price ?? order.total_price,
