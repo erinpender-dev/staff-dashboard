@@ -3,6 +3,7 @@ import { clean } from "./shared-utils.js";
 
 const CUSTOM_INVOICE_INDEX_PATH = "custom-invoices/index.json";
 const CUSTOM_INVOICE_SENDERS_PATH = "custom-invoices/senders.json";
+const CUSTOM_INVOICE_NUMBER_PATTERN = /^CUS-(\d{2})-(\d+)$/i;
 
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return 0;
@@ -17,6 +18,21 @@ function parseAmount(value) {
 
 function roundMoney(value) {
   return Number(parseAmount(value).toFixed(2));
+}
+
+function getInvoiceYearSuffix(baseDate) {
+  const date = baseDate ? new Date(baseDate) : new Date();
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  return String(safeDate.getFullYear()).slice(-2);
+}
+
+function parseCustomInvoiceSequence(invoiceNumber, expectedYearSuffix) {
+  const match = clean(invoiceNumber).match(CUSTOM_INVOICE_NUMBER_PATTERN);
+  if (!match) return null;
+  if (clean(match[1]) !== clean(expectedYearSuffix)) return null;
+
+  const sequence = Number.parseInt(match[2], 10);
+  return Number.isFinite(sequence) && sequence > 0 ? sequence : null;
 }
 
 function normalizeLineItem(item = {}, index = 0) {
@@ -129,6 +145,16 @@ export function generateCustomInvoiceId() {
   return `ci_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate = "") {
+  const yearSuffix = getInvoiceYearSuffix(baseDate);
+  const highestSequence = (Array.isArray(existingInvoices) ? existingInvoices : []).reduce((max, invoice) => {
+    const sequence = parseCustomInvoiceSequence(invoice?.invoice_number, yearSuffix);
+    return sequence && sequence > max ? sequence : max;
+  }, 0);
+
+  return `CUS-${yearSuffix}-${highestSequence + 1}`;
+}
+
 export async function readCustomInvoice(id) {
   if (!clean(id)) return null;
   return readPrivatePath(getCustomInvoicePath(id)).catch(() => null);
@@ -162,30 +188,35 @@ export function buildCustomInvoiceIndexEntry(record = {}) {
 
 export async function saveCustomInvoiceRecord(payload = {}, existingRecord = null) {
   const id = clean(existingRecord?.id || payload.id || generateCustomInvoiceId());
+  const existingInvoices = await readCustomInvoiceIndex();
+  const resolvedInvoiceNumber = clean(existingRecord?.invoice_number || payload.invoice_number) || generateNextCustomInvoiceNumber(
+    existingInvoices.filter((entry) => clean(entry?.id) !== id),
+    payload.invoice_date || existingRecord?.invoice_date || new Date().toISOString()
+  );
   const normalized = normalizeInvoiceRecord(payload, {
     id,
     createdAt: existingRecord?.created_at
   });
+  normalized.invoice_number = resolvedInvoiceNumber;
 
   await writePrivatePath(getCustomInvoicePath(id), normalized);
 
-  const entries = await readCustomInvoiceIndex();
   const nextEntry = buildCustomInvoiceIndexEntry(normalized);
-  const existingIndex = entries.findIndex((entry) => clean(entry?.id) === id);
+  const existingIndex = existingInvoices.findIndex((entry) => clean(entry?.id) === id);
 
   if (existingIndex >= 0) {
-    entries[existingIndex] = nextEntry;
+    existingInvoices[existingIndex] = nextEntry;
   } else {
-    entries.push(nextEntry);
+    existingInvoices.push(nextEntry);
   }
 
-  entries.sort((a, b) => {
+  existingInvoices.sort((a, b) => {
     const timeDiff = new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
     if (timeDiff !== 0) return timeDiff;
     return clean(b.id).localeCompare(clean(a.id));
   });
 
-  await writeCustomInvoiceIndex(entries);
+  await writeCustomInvoiceIndex(existingInvoices);
   return normalized;
 }
 
