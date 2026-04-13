@@ -27,6 +27,50 @@ function normalizeLower(value) {
   return clean(value).toLowerCase();
 }
 
+function parseTags(value) {
+  if (Array.isArray(value)) {
+    return value.map((tag) => clean(tag)).filter(Boolean);
+  }
+
+  return clean(value)
+    .split(",")
+    .map((tag) => clean(tag))
+    .filter(Boolean);
+}
+
+function buildTagsString(tags = []) {
+  return [...new Set((Array.isArray(tags) ? tags : []).map((tag) => clean(tag)).filter(Boolean))].join(", ");
+}
+
+function getLoggedPayments(normalized = {}) {
+  const partialPayments = Array.isArray(normalized.partial_payments) ? normalized.partial_payments : [];
+  if (partialPayments.length) return partialPayments;
+
+  const singlePayment = {
+    type: clean(normalized.payment_received_type),
+    amount: clean(normalized.payment_received_amount),
+    check_number: clean(normalized.payment_received_check_number),
+    note: clean(normalized.payment_received_note),
+    booster_account_name: clean(normalized.booster_payment_account_name)
+  };
+
+  if (
+    singlePayment.type ||
+    singlePayment.amount ||
+    singlePayment.check_number ||
+    singlePayment.note ||
+    singlePayment.booster_account_name
+  ) {
+    return [singlePayment];
+  }
+
+  return [];
+}
+
+function getLoggedPaymentTotal(normalized = {}) {
+  return getLoggedPayments(normalized).reduce((sum, payment) => sum + parseAmount(payment?.amount), 0);
+}
+
 const BOOSTER_ACCOUNTS_PATH = "booster-club/accounts.json";
 const BOOSTER_LEDGER_PATH = "booster-club/ledger.json";
 
@@ -707,6 +751,33 @@ async function markOrderPaid(shop, token, orderId) {
   return { ok: true, method: "graphql" };
 }
 
+async function updateOrderTags(shop, token, orderId, tags = []) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/orders/${orderId}.json`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token
+    },
+    body: JSON.stringify({
+      order: {
+        id: Number(orderId),
+        tags: buildTagsString(tags)
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Could not update tags: ${text}`);
+  }
+
+  const json = await response.json().catch(() => ({}));
+  return {
+    ok: true,
+    tags: buildTagsString(parseTags(json?.order?.tags || tags))
+  };
+}
+
 async function fulfillOrder(shop, token, shopifyOrder) {
   const query = `
     query FulfillmentOrders($id: ID!) {
@@ -902,14 +973,34 @@ export default async function handler(req, res) {
       saved_to_blob: true,
       booster_ledger_sync: { ok: true, entries_added: boosterSync.ledger_entries_added },
       shopify_paid_sync: null,
+      shopify_tag_sync: null,
       shopify_fulfillment_sync: null
     };
 
     const paymentStatus = clean(finalNormalized.internal_payment_status).toLowerCase();
     const orderStatus = clean(finalNormalized.internal_order_status).toLowerCase();
+    const orderTotal = getOrderTotalFromShopifyOrder(shopifyOrder);
+    const loggedPaymentTotal = getLoggedPaymentTotal(finalNormalized);
+    const isFullyCovered = orderTotal <= 0 || loggedPaymentTotal + 0.0001 >= orderTotal;
+    const isPartiallyPaid = loggedPaymentTotal > 0 && !isFullyCovered;
+    const existingTags = parseTags(shopifyOrder.tags);
+    const nextTags = existingTags.filter((tag) => normalizeLower(tag) !== "partially paid");
+    if (isPartiallyPaid) {
+      nextTags.push("Partially Paid");
+    }
 
-    const shouldMarkPaid = paymentStatus === "payment received" || paymentStatus === "partial payment";
+    const shouldMarkPaid = paymentStatus === "payment received" && isFullyCovered;
     const shouldFulfill = orderStatus === "order complete";
+
+    if (buildTagsString(existingTags) !== buildTagsString(nextTags)) {
+      try {
+        syncResults.shopify_tag_sync = await updateOrderTags(shop, token, orderId, nextTags);
+      } catch (error) {
+        syncResults.shopify_tag_sync = { ok: false, error: error.message || "Could not update tags." };
+      }
+    } else {
+      syncResults.shopify_tag_sync = { skipped: true };
+    }
 
     if (shouldMarkPaid && clean(shopifyOrder.financial_status).toLowerCase() !== "paid") {
       try {
