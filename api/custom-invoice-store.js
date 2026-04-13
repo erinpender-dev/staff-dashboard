@@ -1,5 +1,6 @@
 import { put } from "@vercel/blob";
 import { clean } from "./shared-utils.js";
+import { DEFAULT_CUSTOM_INVOICE_SENDERS } from "./custom-invoice-sender-config.js";
 
 const CUSTOM_INVOICE_INDEX_PATH = "custom-invoices/index.json";
 const CUSTOM_INVOICE_SENDERS_PATH = "custom-invoices/senders.json";
@@ -22,7 +23,7 @@ function roundMoney(value) {
 
 function normalizeInvoicePrefix(value) {
   const cleaned = clean(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return cleaned || "CUS";
+  return cleaned || "INV";
 }
 
 function getInvoiceYearSuffix(baseDate) {
@@ -58,6 +59,7 @@ function normalizeLineItem(item = {}, index = 0) {
 function normalizeSender(sender = {}) {
   return {
     id: clean(sender.id),
+    label: clean(sender.label || sender.name),
     name: clean(sender.name),
     invoice_prefix: normalizeInvoicePrefix(sender.invoice_prefix),
     phone: clean(sender.phone),
@@ -66,6 +68,29 @@ function normalizeSender(sender = {}) {
     payment_info: clean(sender.payment_info),
     checks_payable_to: clean(sender.checks_payable_to)
   };
+}
+
+function mergeDefaultSenders(savedSenders = []) {
+  const merged = new Map();
+
+  DEFAULT_CUSTOM_INVOICE_SENDERS.forEach((sender) => {
+    const normalized = normalizeSender(sender);
+    const key = clean(normalized.id).toLowerCase() || clean(normalized.label).toLowerCase();
+    if (!key) return;
+    merged.set(key, normalized);
+  });
+
+  savedSenders.forEach((sender) => {
+    const normalized = normalizeSender(sender);
+    const key = clean(normalized.id).toLowerCase() || clean(normalized.label).toLowerCase();
+    if (!key) return;
+    merged.set(key, {
+      ...merged.get(key),
+      ...normalized
+    });
+  });
+
+  return [...merged.values()].sort((a, b) => clean(a.label || a.name).localeCompare(clean(b.label || b.name)));
 }
 
 function normalizeInvoiceRecord(payload = {}, { id, createdAt } = {}) {
@@ -152,7 +177,7 @@ export function generateCustomInvoiceId() {
   return `ci_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate = "", prefix = "CUS") {
+export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate = "", prefix = "INV") {
   const yearSuffix = getInvoiceYearSuffix(baseDate);
   const normalizedPrefix = normalizeInvoicePrefix(prefix);
   const highestSequence = (Array.isArray(existingInvoices) ? existingInvoices : []).reduce((max, invoice) => {
@@ -234,7 +259,7 @@ export async function saveCustomInvoiceRecord(payload = {}, existingRecord = nul
 
 export async function readCustomInvoiceSenders() {
   const data = await readPrivatePath(CUSTOM_INVOICE_SENDERS_PATH).catch(() => null);
-  return Array.isArray(data?.senders) ? data.senders : [];
+  return mergeDefaultSenders(Array.isArray(data?.senders) ? data.senders : []);
 }
 
 export async function saveCustomInvoiceSender(payload = {}) {
@@ -248,6 +273,7 @@ export async function saveCustomInvoiceSender(payload = {}) {
   const record = {
     id: clean(payload.id) || `sender_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     name,
+    label: clean(payload.label || payload.name),
     invoice_prefix: normalizeInvoicePrefix(payload.invoice_prefix),
     phone: clean(payload.phone),
     email: clean(payload.email),
@@ -269,11 +295,11 @@ export async function saveCustomInvoiceSender(payload = {}) {
     senders.push(record);
   }
 
-  senders.sort((a, b) => clean(a.name).localeCompare(clean(b.name)));
+  const mergedSenders = mergeDefaultSenders(senders);
 
   await writePrivatePath(CUSTOM_INVOICE_SENDERS_PATH, {
     updated_at: new Date().toISOString(),
-    senders
+    senders: mergedSenders
   });
 
   return record;
