@@ -3,7 +3,7 @@ import { clean } from "./shared-utils.js";
 
 const CUSTOM_INVOICE_INDEX_PATH = "custom-invoices/index.json";
 const CUSTOM_INVOICE_SENDERS_PATH = "custom-invoices/senders.json";
-const CUSTOM_INVOICE_NUMBER_PATTERN = /^CUS-(\d{2})-(\d+)$/i;
+const CUSTOM_INVOICE_NUMBER_PATTERN = /^([A-Z0-9]+)-(\d{2})-(\d+)$/i;
 
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return 0;
@@ -20,18 +20,24 @@ function roundMoney(value) {
   return Number(parseAmount(value).toFixed(2));
 }
 
+function normalizeInvoicePrefix(value) {
+  const cleaned = clean(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return cleaned || "CUS";
+}
+
 function getInvoiceYearSuffix(baseDate) {
   const date = baseDate ? new Date(baseDate) : new Date();
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
   return String(safeDate.getFullYear()).slice(-2);
 }
 
-function parseCustomInvoiceSequence(invoiceNumber, expectedYearSuffix) {
+function parseCustomInvoiceSequence(invoiceNumber, expectedPrefix, expectedYearSuffix) {
   const match = clean(invoiceNumber).match(CUSTOM_INVOICE_NUMBER_PATTERN);
   if (!match) return null;
-  if (clean(match[1]) !== clean(expectedYearSuffix)) return null;
+  if (normalizeInvoicePrefix(match[1]) !== normalizeInvoicePrefix(expectedPrefix)) return null;
+  if (clean(match[2]) !== clean(expectedYearSuffix)) return null;
 
-  const sequence = Number.parseInt(match[2], 10);
+  const sequence = Number.parseInt(match[3], 10);
   return Number.isFinite(sequence) && sequence > 0 ? sequence : null;
 }
 
@@ -53,6 +59,7 @@ function normalizeSender(sender = {}) {
   return {
     id: clean(sender.id),
     name: clean(sender.name),
+    invoice_prefix: normalizeInvoicePrefix(sender.invoice_prefix),
     phone: clean(sender.phone),
     email: clean(sender.email),
     address: clean(sender.address),
@@ -145,14 +152,15 @@ export function generateCustomInvoiceId() {
   return `ci_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate = "") {
+export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate = "", prefix = "CUS") {
   const yearSuffix = getInvoiceYearSuffix(baseDate);
+  const normalizedPrefix = normalizeInvoicePrefix(prefix);
   const highestSequence = (Array.isArray(existingInvoices) ? existingInvoices : []).reduce((max, invoice) => {
-    const sequence = parseCustomInvoiceSequence(invoice?.invoice_number, yearSuffix);
+    const sequence = parseCustomInvoiceSequence(invoice?.invoice_number, normalizedPrefix, yearSuffix);
     return sequence && sequence > max ? sequence : max;
   }, 0);
 
-  return `CUS-${yearSuffix}-${highestSequence + 1}`;
+  return `${normalizedPrefix}-${yearSuffix}-${highestSequence + 1}`;
 }
 
 export async function readCustomInvoice(id) {
@@ -189,14 +197,18 @@ export function buildCustomInvoiceIndexEntry(record = {}) {
 export async function saveCustomInvoiceRecord(payload = {}, existingRecord = null) {
   const id = clean(existingRecord?.id || payload.id || generateCustomInvoiceId());
   const existingInvoices = await readCustomInvoiceIndex();
+  const resolvedSender = normalizeSender(payload.sender || existingRecord?.sender || {});
   const resolvedInvoiceNumber = clean(existingRecord?.invoice_number || payload.invoice_number) || generateNextCustomInvoiceNumber(
     existingInvoices.filter((entry) => clean(entry?.id) !== id),
     payload.invoice_date || existingRecord?.invoice_date || new Date().toISOString()
+    ,
+    resolvedSender.invoice_prefix
   );
   const normalized = normalizeInvoiceRecord(payload, {
     id,
     createdAt: existingRecord?.created_at
   });
+  normalized.sender = resolvedSender;
   normalized.invoice_number = resolvedInvoiceNumber;
 
   await writePrivatePath(getCustomInvoicePath(id), normalized);
@@ -236,6 +248,7 @@ export async function saveCustomInvoiceSender(payload = {}) {
   const record = {
     id: clean(payload.id) || `sender_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     name,
+    invoice_prefix: normalizeInvoicePrefix(payload.invoice_prefix),
     phone: clean(payload.phone),
     email: clean(payload.email),
     address: clean(payload.address),
