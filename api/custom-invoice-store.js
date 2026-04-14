@@ -1,6 +1,6 @@
 import { put } from "@vercel/blob";
 import { clean } from "./shared-utils.js";
-import { DEFAULT_CUSTOM_INVOICE_SENDERS } from "./custom-invoice-sender-config.js";
+import { INITIAL_CUSTOM_INVOICE_SENDERS } from "./custom-invoice-sender-config.js";
 
 const CUSTOM_INVOICE_INDEX_PATH = "custom-invoices/index.json";
 const CUSTOM_INVOICE_SENDERS_PATH = "custom-invoices/senders.json";
@@ -70,27 +70,22 @@ function normalizeSender(sender = {}) {
   };
 }
 
-function mergeDefaultSenders(savedSenders = []) {
-  const merged = new Map();
+function normalizeSenderList(senders = []) {
+  return (Array.isArray(senders) ? senders : [])
+    .map((sender) => normalizeSender(sender))
+    .filter((sender) => clean(sender.id) || clean(sender.label) || clean(sender.name))
+    .sort((a, b) => clean(a.label || a.name).localeCompare(clean(b.label || b.name)));
+}
 
-  DEFAULT_CUSTOM_INVOICE_SENDERS.forEach((sender) => {
-    const normalized = normalizeSender(sender);
-    const key = clean(normalized.id).toLowerCase() || clean(normalized.label).toLowerCase();
-    if (!key) return;
-    merged.set(key, normalized);
-  });
+function getInitialSenders() {
+  return normalizeSenderList(INITIAL_CUSTOM_INVOICE_SENDERS);
+}
 
-  savedSenders.forEach((sender) => {
-    const normalized = normalizeSender(sender);
-    const key = clean(normalized.id).toLowerCase() || clean(normalized.label).toLowerCase();
-    if (!key) return;
-    merged.set(key, {
-      ...merged.get(key),
-      ...normalized
-    });
-  });
-
-  return [...merged.values()].sort((a, b) => clean(a.label || a.name).localeCompare(clean(b.label || b.name)));
+function normalizeInvoiceLifecycle(record = {}) {
+  return {
+    payment_status: clean(record.payment_status || "unpaid").toLowerCase() === "paid" ? "paid" : "unpaid",
+    invoice_status: clean(record.invoice_status || "draft").toLowerCase() === "complete" ? "complete" : "draft"
+  };
 }
 
 function normalizeInvoiceRecord(payload = {}, { id, createdAt } = {}) {
@@ -106,6 +101,9 @@ function normalizeInvoiceRecord(payload = {}, { id, createdAt } = {}) {
   const tax = roundMoney(payload.tax);
   const total = roundMoney(subtotal - discount + shipping + tax);
   const now = new Date().toISOString();
+  const lifecycle = normalizeInvoiceLifecycle(payload);
+  const senderProfileId = clean(payload.sender_profile_id || payload.sender_profile_key);
+  const senderSnapshot = normalizeSender(payload.sender_snapshot || payload.sender);
 
   return {
     id: clean(id || payload.id),
@@ -120,14 +118,18 @@ function normalizeInvoiceRecord(payload = {}, { id, createdAt } = {}) {
     reference: clean(payload.reference),
     memo: clean(payload.memo),
     notes: clean(payload.notes),
-    sender_profile_id: clean(payload.sender_profile_id),
-    sender: normalizeSender(payload.sender),
+    sender_profile_id: senderProfileId,
+    sender_profile_key: senderProfileId,
+    sender_snapshot: senderSnapshot,
+    sender: senderSnapshot,
     line_items: lineItems,
     subtotal,
     discount,
     shipping,
     tax,
     total,
+    payment_status: lifecycle.payment_status,
+    invoice_status: lifecycle.invoice_status,
     updated_at: now,
     created_at: clean(createdAt || payload.created_at) || now
   };
@@ -190,12 +192,35 @@ export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate 
 
 export async function readCustomInvoice(id) {
   if (!clean(id)) return null;
-  return readPrivatePath(getCustomInvoicePath(id)).catch(() => null);
+  const record = await readPrivatePath(getCustomInvoicePath(id)).catch(() => null);
+  if (!record) return null;
+
+  const lifecycle = normalizeInvoiceLifecycle(record);
+  const senderSnapshot = normalizeSender(record.sender_snapshot || record.sender);
+  return {
+    ...record,
+    payment_status: lifecycle.payment_status,
+    invoice_status: lifecycle.invoice_status,
+    sender_profile_id: clean(record.sender_profile_id || record.sender_profile_key),
+    sender_profile_key: clean(record.sender_profile_id || record.sender_profile_key),
+    sender_snapshot: senderSnapshot,
+    sender: senderSnapshot
+  };
 }
 
 export async function readCustomInvoiceIndex() {
   const data = await readPrivatePath(CUSTOM_INVOICE_INDEX_PATH).catch(() => null);
-  return Array.isArray(data?.invoices) ? data.invoices : [];
+  return (Array.isArray(data?.invoices) ? data.invoices : []).map((entry) => {
+    const lifecycle = normalizeInvoiceLifecycle(entry);
+    return {
+      ...entry,
+      sender_profile_id: clean(entry.sender_profile_id || entry.sender_profile_key),
+      sender_profile_key: clean(entry.sender_profile_id || entry.sender_profile_key),
+      sender_label: clean(entry.sender_label || entry.sender_name),
+      payment_status: lifecycle.payment_status,
+      invoice_status: lifecycle.invoice_status
+    };
+  });
 }
 
 export async function writeCustomInvoiceIndex(entries = []) {
@@ -206,6 +231,8 @@ export async function writeCustomInvoiceIndex(entries = []) {
 }
 
 export function buildCustomInvoiceIndexEntry(record = {}) {
+  const lifecycle = normalizeInvoiceLifecycle(record);
+  const senderSnapshot = normalizeSender(record.sender_snapshot || record.sender);
   return {
     id: clean(record.id),
     invoice_number: clean(record.invoice_number),
@@ -213,7 +240,13 @@ export function buildCustomInvoiceIndexEntry(record = {}) {
     due_date: clean(record.due_date),
     billed_to: clean(record.billed_to),
     prepared_for: clean(record.prepared_for),
+    sender_profile_id: clean(record.sender_profile_id || record.sender_profile_key),
+    sender_profile_key: clean(record.sender_profile_id || record.sender_profile_key),
+    sender_label: clean(record.sender_label || senderSnapshot.label || senderSnapshot.name),
+    sender_name: clean(senderSnapshot.name),
     total: roundMoney(record.total),
+    payment_status: lifecycle.payment_status,
+    invoice_status: lifecycle.invoice_status,
     updated_at: clean(record.updated_at),
     created_at: clean(record.created_at)
   };
@@ -222,17 +255,34 @@ export function buildCustomInvoiceIndexEntry(record = {}) {
 export async function saveCustomInvoiceRecord(payload = {}, existingRecord = null) {
   const id = clean(existingRecord?.id || payload.id || generateCustomInvoiceId());
   const existingInvoices = await readCustomInvoiceIndex();
-  const resolvedSender = normalizeSender(payload.sender || existingRecord?.sender || {});
+  const senderProfiles = await readCustomInvoiceSenders();
+  const senderProfileId = clean(
+    payload.sender_profile_id ||
+    payload.sender_profile_key ||
+    existingRecord?.sender_profile_id ||
+    existingRecord?.sender_profile_key
+  );
+  const senderProfile = senderProfiles.find((sender) => clean(sender.id) === senderProfileId);
+  const resolvedSender = normalizeSender(
+    payload.sender_snapshot ||
+    payload.sender ||
+    senderProfile ||
+    existingRecord?.sender_snapshot ||
+    existingRecord?.sender ||
+    {}
+  );
   const resolvedInvoiceNumber = clean(existingRecord?.invoice_number || payload.invoice_number) || generateNextCustomInvoiceNumber(
     existingInvoices.filter((entry) => clean(entry?.id) !== id),
-    payload.invoice_date || existingRecord?.invoice_date || new Date().toISOString()
-    ,
+    payload.invoice_date || existingRecord?.invoice_date || new Date().toISOString(),
     resolvedSender.invoice_prefix
   );
   const normalized = normalizeInvoiceRecord(payload, {
     id,
     createdAt: existingRecord?.created_at
   });
+  normalized.sender_profile_id = senderProfileId;
+  normalized.sender_profile_key = senderProfileId;
+  normalized.sender_snapshot = resolvedSender;
   normalized.sender = resolvedSender;
   normalized.invoice_number = resolvedInvoiceNumber;
 
@@ -259,7 +309,10 @@ export async function saveCustomInvoiceRecord(payload = {}, existingRecord = nul
 
 export async function readCustomInvoiceSenders() {
   const data = await readPrivatePath(CUSTOM_INVOICE_SENDERS_PATH).catch(() => null);
-  return mergeDefaultSenders(Array.isArray(data?.senders) ? data.senders : []);
+  if (Array.isArray(data?.senders)) {
+    return normalizeSenderList(data.senders);
+  }
+  return getInitialSenders();
 }
 
 export async function saveCustomInvoiceSender(payload = {}) {
@@ -285,7 +338,7 @@ export async function saveCustomInvoiceSender(payload = {}) {
   };
 
   const existingIndex = senders.findIndex((sender) => {
-    return clean(sender?.id) === record.id || clean(sender?.name).toLowerCase() === record.name.toLowerCase();
+    return clean(sender?.id) === record.id;
   });
 
   if (existingIndex >= 0) {
@@ -295,12 +348,29 @@ export async function saveCustomInvoiceSender(payload = {}) {
     senders.push(record);
   }
 
-  const mergedSenders = mergeDefaultSenders(senders);
+  const normalizedSenders = normalizeSenderList(senders);
 
   await writePrivatePath(CUSTOM_INVOICE_SENDERS_PATH, {
     updated_at: new Date().toISOString(),
-    senders: mergedSenders
+    senders: normalizedSenders
   });
 
   return record;
+}
+
+export async function deleteCustomInvoiceSender(senderId = "") {
+  const targetId = clean(senderId);
+  if (!targetId) {
+    throw new Error("Sender id is required.");
+  }
+
+  const senders = await readCustomInvoiceSenders();
+  const nextSenders = senders.filter((sender) => clean(sender.id) !== targetId);
+
+  await writePrivatePath(CUSTOM_INVOICE_SENDERS_PATH, {
+    updated_at: new Date().toISOString(),
+    senders: normalizeSenderList(nextSenders)
+  });
+
+  return normalizeSenderList(nextSenders);
 }

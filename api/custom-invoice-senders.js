@@ -1,11 +1,12 @@
 import { clean, setCors } from "./shared-utils.js";
 import {
+  deleteCustomInvoiceSender,
   readCustomInvoiceSenders,
   saveCustomInvoiceSender
 } from "./custom-invoice-store.js";
 
 export default async function handler(req, res) {
-  setCors(req, res, "GET, POST, OPTIONS");
+  setCors(req, res, "GET, POST, PUT, DELETE, OPTIONS");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -20,10 +21,10 @@ export default async function handler(req, res) {
       });
     }
 
-    if (req.method === "POST") {
+    if (req.method === "POST" || req.method === "PUT") {
       const payload = req.body || {};
-      if (!clean(payload.name)) {
-        return res.status(400).json({ error: "Sender name is required." });
+      if (!clean(payload.label || payload.name) || !clean(payload.name)) {
+        return res.status(400).json({ error: "Sender profile label and sender name are required." });
       }
 
       const sender = await saveCustomInvoiceSender(payload);
@@ -31,6 +32,19 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: true,
         sender,
+        senders
+      });
+    }
+
+    if (req.method === "DELETE") {
+      const senderId = clean(req.query?.id || req.body?.id);
+      if (!senderId) {
+        return res.status(400).json({ error: "Sender id is required." });
+      }
+
+      const senders = await deleteCustomInvoiceSender(senderId);
+      return res.status(200).json({
+        ok: true,
         senders
       });
     }

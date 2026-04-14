@@ -1,9 +1,9 @@
-export const DEFAULT_CUSTOM_INVOICE_SENDERS = [
+export const INITIAL_CUSTOM_INVOICE_SENDERS = [
   {
     id: "bkreative-works",
     label: "BKreative Works",
     name: "BKreative Works",
-    invoice_prefix: "CUS",
+    invoice_prefix: "BKW",
     phone: "(985) 687-4952",
     email: "mindi.plaisance@gmail.com",
     address: "11491 Highway 442 W, Tickfaw, LA 70466",
