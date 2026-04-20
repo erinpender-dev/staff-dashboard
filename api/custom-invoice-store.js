@@ -1,4 +1,4 @@
-import { put } from "@vercel/blob";
+import { get, put } from "@vercel/blob";
 import { clean } from "./shared-utils.js";
 import { INITIAL_CUSTOM_INVOICE_SENDERS } from "./custom-invoice-sender-config.js";
 
@@ -140,29 +140,24 @@ function getCustomInvoicePath(id) {
 }
 
 async function readPrivatePath(path) {
-  const baseUrl = process.env.BLOB_BASE_URL;
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
-  if (!baseUrl || !token) {
-    throw new Error("Missing BLOB_BASE_URL or BLOB_READ_WRITE_TOKEN");
+  if (!token) {
+    throw new Error("Missing BLOB_READ_WRITE_TOKEN");
   }
 
-  const response = await fetch(`${baseUrl}/${path}?ts=${Date.now()}`, {
+  const result = await get(path, {
+    access: "private",
+    token,
+    useCache: false,
     headers: {
-      Authorization: `Bearer ${token}`,
       "Cache-Control": "no-cache"
-    },
-    cache: "no-store"
+    }
   });
 
-  if (response.status === 404) return null;
+  if (!result?.stream) return null;
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Blob read failed: ${text}`);
-  }
-
-  return await response.json();
+  return await new Response(result.stream).json();
 }
 
 async function writePrivatePath(path, data) {
@@ -192,7 +187,7 @@ export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate 
 
 export async function readCustomInvoice(id) {
   if (!clean(id)) return null;
-  const record = await readPrivatePath(getCustomInvoicePath(id)).catch(() => null);
+  const record = await readPrivatePath(getCustomInvoicePath(id));
   if (!record) return null;
 
   const lifecycle = normalizeInvoiceLifecycle(record);
@@ -209,7 +204,7 @@ export async function readCustomInvoice(id) {
 }
 
 export async function readCustomInvoiceIndex() {
-  const data = await readPrivatePath(CUSTOM_INVOICE_INDEX_PATH).catch(() => null);
+  const data = await readPrivatePath(CUSTOM_INVOICE_INDEX_PATH);
   return (Array.isArray(data?.invoices) ? data.invoices : []).map((entry) => {
     const lifecycle = normalizeInvoiceLifecycle(entry);
     return {
@@ -308,7 +303,7 @@ export async function saveCustomInvoiceRecord(payload = {}, existingRecord = nul
 }
 
 export async function readCustomInvoiceSenders() {
-  const data = await readPrivatePath(CUSTOM_INVOICE_SENDERS_PATH).catch(() => null);
+  const data = await readPrivatePath(CUSTOM_INVOICE_SENDERS_PATH);
   if (Array.isArray(data?.senders)) {
     return normalizeSenderList(data.senders);
   }
