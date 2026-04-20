@@ -1,23 +1,21 @@
 export function setCors(req, res, methods = "GET, OPTIONS") {
   const requestOrigin = req?.headers?.origin || "";
+  const requestedHeaders = req?.headers?.["access-control-request-headers"];
   const configuredOrigins = String(process.env.ALLOWED_ORIGIN || "*")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
 
-  let allowedOrigin = "*";
-  if (configuredOrigins.length && !configuredOrigins.includes("*")) {
-    allowedOrigin = configuredOrigins.includes(requestOrigin)
-      ? requestOrigin
-      : configuredOrigins[0];
-  } else if (requestOrigin) {
-    allowedOrigin = requestOrigin;
-  }
+  const strictOrigins = String(process.env.STRICT_ALLOWED_ORIGIN || "").toLowerCase() === "true";
+  const isAllowedOrigin = configuredOrigins.includes("*") || configuredOrigins.includes(requestOrigin);
+  const allowedOrigin = requestOrigin && (!strictOrigins || isAllowedOrigin)
+    ? requestOrigin
+    : configuredOrigins[0] || "*";
 
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", methods);
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Cache-Control");
+  res.setHeader("Access-Control-Allow-Headers", requestedHeaders || "Content-Type, Authorization, Cache-Control");
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
