@@ -1,8 +1,15 @@
 import {
+  clientError,
   clean,
+  isValidOrderId,
+  isValidShopDomain,
   parseJsonSafe,
+  rateLimit,
   readPrivateJson,
-  setCors
+  requireDashboardAuth,
+  serverError,
+  setCors,
+  setNoStore
 } from "./shared-utils.js";
 
 function unique(values = []) {
@@ -474,13 +481,14 @@ function getBoosterCreditDefaults(saved, orgTags, order) {
 
 export default async function handler(req, res) {
   setCors(req, res);
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.setHeader("Pragma", "no-cache");
-  res.setHeader("Expires", "0");
-  res.setHeader("Surrogate-Control", "no-store");
+  setNoStore(res);
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
+  }
+
+  if (!rateLimit(req, res) || !requireDashboardAuth(req, res)) {
+    return;
   }
 
   if (req.method !== "GET") {
@@ -491,14 +499,16 @@ export default async function handler(req, res) {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
   const orderId = clean(req.query.order_id || req.query.id);
 
-  if (!shop || !token) {
-    return res.status(500).json({
-      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
-    });
+  if (!shop || !token || !isValidShopDomain(shop)) {
+    return serverError(res, "Shopify API is not configured.");
   }
 
   if (!orderId) {
-    return res.status(400).json({ error: "Missing order id" });
+    return clientError(res, 400, "Missing order id");
+  }
+
+  if (!isValidOrderId(orderId)) {
+    return clientError(res, 400, "Invalid order id");
   }
 
   try {
@@ -516,8 +526,7 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: "Shopify API error",
-        details: text
+        error: "Could not load order"
       });
     }
 
@@ -713,9 +722,6 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
 
     return res.status(200).json({ order: merged });
   } catch (error) {
-    return res.status(500).json({
-      error: "Server error",
-      details: error.message
-    });
+    return serverError(res, "Could not load order.");
   }
 }
