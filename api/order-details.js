@@ -8,7 +8,6 @@ import {
   parseJsonSafe,
   rateLimit,
   readPrivateJson,
-  requireDashboardAuth,
   requireJsonRequest,
   serverError,
   setCors,
@@ -1032,7 +1031,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (!rateLimit(req, res) || !requireDashboardAuth(req, res)) {
+  if (!rateLimit(req, res)) {
     return;
   }
 

@@ -3,7 +3,6 @@ import {
   clientError,
   clean,
   rateLimit,
-  requireDashboardAuth,
   requireJsonRequest,
   serverError,
   setCors,
@@ -123,7 +122,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  if (!rateLimit(req, res) || !requireDashboardAuth(req, res)) {
+  if (!rateLimit(req, res)) {
     return;
   }
 

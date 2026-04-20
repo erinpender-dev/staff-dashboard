@@ -15,7 +15,7 @@ export function setCors(req, res, methods = "GET, OPTIONS") {
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", methods);
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Dashboard-Token, Cache-Control");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Cache-Control");
 }
 
 export function setNoStore(res) {
@@ -82,27 +82,6 @@ export function rateLimit(req, res, { windowMs = 60_000, max = 120 } = {}) {
 
   if (bucket.count > max) {
     res.status(429).json({ error: "Too many requests. Please try again shortly." });
-    return false;
-  }
-
-  return true;
-}
-
-export function requireDashboardAuth(req, res) {
-  const expected = clean(process.env.DASHBOARD_API_TOKEN || process.env.INTERNAL_API_TOKEN);
-  if (!expected) {
-    res.status(500).json({ error: "Dashboard API authentication is not configured." });
-    return false;
-  }
-
-  const authHeader = clean(req.headers?.authorization);
-  const bearer = authHeader.toLowerCase().startsWith("bearer ")
-    ? authHeader.slice(7).trim()
-    : "";
-  const provided = bearer || clean(req.headers?.["x-dashboard-token"]);
-
-  if (!provided || provided !== expected) {
-    res.status(401).json({ error: "Unauthorized." });
     return false;
   }
 
