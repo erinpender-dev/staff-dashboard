@@ -6,6 +6,7 @@ import {
   readPrivateJson,
   setCors
 } from "./shared-utils.js";
+import { requireInternalAuth } from "./_lib/internal-auth.js";
 
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return 0;
@@ -877,6 +878,10 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") {
     res.status(200).end();
+    return;
+  }
+
+  if (!(await requireInternalAuth(req, res))) {
     return;
   }
 

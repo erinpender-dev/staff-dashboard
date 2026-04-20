@@ -1,14 +1,17 @@
 import { put } from "@vercel/blob";
+import { requireInternalAuth } from "./_lib/internal-auth.js";
 
 const BOOSTER_ACCOUNTS_PATH = "booster-club/accounts.json";
 const BOOSTER_LEDGER_PATH = "booster-club/ledger.json";
 
 function setCors(req, res) {
-  const allowedOrigin = process.env.ALLOWED_ORIGIN || "*";
+  const requestOrigin = req?.headers?.origin || "";
+  const allowedOrigin = requestOrigin || process.env.ALLOWED_ORIGIN || "*";
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
 function clean(value) {
@@ -120,6 +123,10 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
+  }
+
+  if (!(await requireInternalAuth(req, res))) {
+    return;
   }
 
   try {

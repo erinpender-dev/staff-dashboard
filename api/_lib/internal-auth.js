@@ -1,0 +1,155 @@
+import crypto from "crypto";
+
+const DEFAULT_COOKIE_NAME = "bk_internal_session";
+const SESSION_TTL_SECONDS = 60 * 60 * 12;
+
+function clean(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function base64UrlEncode(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function base64UrlJson(value) {
+  return base64UrlEncode(JSON.stringify(value));
+}
+
+function sign(value, secret) {
+  return crypto.createHmac("sha256", secret).update(value).digest("base64url");
+}
+
+function safeEqual(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function getCookieName() {
+  return clean(process.env.INTERNAL_SESSION_COOKIE_NAME) || DEFAULT_COOKIE_NAME;
+}
+
+function getSessionSecret() {
+  return clean(process.env.INTERNAL_SESSION_SECRET);
+}
+
+function parseCookies(req) {
+  const header = req?.headers?.cookie || "";
+  return header.split(";").reduce((cookies, part) => {
+    const index = part.indexOf("=");
+    if (index < 0) return cookies;
+    const key = clean(part.slice(0, index));
+    const value = clean(part.slice(index + 1));
+    if (key) {
+      try {
+        cookies[key] = decodeURIComponent(value);
+      } catch (error) {
+        cookies[key] = value;
+      }
+    }
+    return cookies;
+  }, {});
+}
+
+function cookieAttributes(maxAgeSeconds) {
+  return [
+    "Path=/",
+    "HttpOnly",
+    "Secure",
+    "SameSite=None",
+    `Max-Age=${maxAgeSeconds}`,
+    `Expires=${new Date(Date.now() + maxAgeSeconds * 1000).toUTCString()}`
+  ].join("; ");
+}
+
+export function createSharedStaffSession() {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    isAuthenticated: true,
+    authMode: "shared_passcode",
+    staffId: null,
+    staffName: "Shared Staff Session",
+    staffRole: "admin",
+    iat: now,
+    exp: now + SESSION_TTL_SECONDS
+  };
+}
+
+export function createSessionToken(session) {
+  const secret = getSessionSecret();
+  if (!secret) {
+    throw new Error("INTERNAL_SESSION_SECRET is not configured.");
+  }
+
+  const payload = base64UrlJson(session);
+  const signature = sign(payload, secret);
+  return `${payload}.${signature}`;
+}
+
+export function verifySessionToken(token) {
+  const secret = getSessionSecret();
+  if (!secret) return null;
+
+  const [payload, signature] = clean(token).split(".");
+  if (!payload || !signature) return null;
+
+  const expected = sign(payload, secret);
+  if (!safeEqual(signature, expected)) return null;
+
+  let session;
+  try {
+    session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch (error) {
+    return null;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!session?.isAuthenticated || Number(session.exp || 0) <= now) {
+    return null;
+  }
+
+  return {
+    isAuthenticated: true,
+    authMode: clean(session.authMode) || "shared_passcode",
+    staffId: session.staffId || null,
+    staffName: clean(session.staffName) || "Shared Staff Session",
+    staffRole: clean(session.staffRole) || "admin"
+  };
+}
+
+export function getInternalAuth(req) {
+  const cookies = parseCookies(req);
+  return verifySessionToken(cookies[getCookieName()]);
+}
+
+export function setInternalSessionCookie(res, session) {
+  const token = createSessionToken(session);
+  res.setHeader("Set-Cookie", `${getCookieName()}=${encodeURIComponent(token)}; ${cookieAttributes(SESSION_TTL_SECONDS)}`);
+}
+
+export function clearInternalSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${getCookieName()}=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
+}
+
+export async function requireInternalAuth(req, res) {
+  const auth = getInternalAuth(req);
+  if (auth?.isAuthenticated) {
+    req.internalAuth = auth;
+    return auth;
+  }
+
+  res.status(401).json({
+    ok: false,
+    error: "Internal dashboard login required."
+  });
+  return null;
+}
+
+export function passcodeMatches(value) {
+  const expected = clean(process.env.INTERNAL_DASHBOARD_PASSCODE);
+  const provided = clean(value);
+  if (!expected || !provided) return false;
+  return safeEqual(provided, expected);
+}

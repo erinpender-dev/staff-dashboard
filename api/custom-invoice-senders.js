@@ -1,4 +1,5 @@
 import { clean, setCors } from "./shared-utils.js";
+import { requireInternalAuth } from "./_lib/internal-auth.js";
 import {
   deleteCustomInvoiceSender,
   readCustomInvoiceSenders,
@@ -10,6 +11,10 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
+  }
+
+  if (!(await requireInternalAuth(req, res))) {
+    return;
   }
 
   try {
