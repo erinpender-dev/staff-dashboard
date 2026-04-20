@@ -205,7 +205,9 @@ export async function readCustomInvoice(id) {
 
 export async function readCustomInvoiceIndex() {
   const data = await readPrivatePath(CUSTOM_INVOICE_INDEX_PATH);
-  return (Array.isArray(data?.invoices) ? data.invoices : []).map((entry) => {
+  const entries = Array.isArray(data) ? data : Array.isArray(data?.invoices) ? data.invoices : [];
+
+  return entries.map((entry) => {
     const lifecycle = normalizeInvoiceLifecycle(entry);
     return {
       ...entry,
@@ -304,6 +306,9 @@ export async function saveCustomInvoiceRecord(payload = {}, existingRecord = nul
 
 export async function readCustomInvoiceSenders() {
   const data = await readPrivatePath(CUSTOM_INVOICE_SENDERS_PATH);
+  if (Array.isArray(data)) {
+    return normalizeSenderList(data);
+  }
   if (Array.isArray(data?.senders)) {
     return normalizeSenderList(data.senders);
   }

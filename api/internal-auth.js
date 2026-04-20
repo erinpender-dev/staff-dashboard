@@ -29,10 +29,11 @@ export default async function handler(req, res) {
     }
 
     const session = createSharedStaffSession();
-    setInternalSessionCookie(res, session);
+    const sessionToken = setInternalSessionCookie(res, session);
 
     return res.status(200).json({
       ok: true,
+      sessionToken,
       auth: {
         isAuthenticated: true,
         authMode: session.authMode,

@@ -53,6 +53,12 @@ function parseCookies(req) {
   }, {});
 }
 
+function getBearerToken(req) {
+  const header = clean(req?.headers?.authorization || req?.headers?.Authorization);
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return clean(match?.[1]);
+}
+
 function cookieAttributes(maxAgeSeconds) {
   return [
     "Path=/",
@@ -120,6 +126,12 @@ export function verifySessionToken(token) {
 }
 
 export function getInternalAuth(req) {
+  const bearerToken = getBearerToken(req);
+  const bearerAuth = verifySessionToken(bearerToken);
+  if (bearerAuth?.isAuthenticated) {
+    return bearerAuth;
+  }
+
   const cookies = parseCookies(req);
   return verifySessionToken(cookies[getCookieName()]);
 }
@@ -127,6 +139,7 @@ export function getInternalAuth(req) {
 export function setInternalSessionCookie(res, session) {
   const token = createSessionToken(session);
   res.setHeader("Set-Cookie", `${getCookieName()}=${encodeURIComponent(token)}; ${cookieAttributes(SESSION_TTL_SECONDS)}`);
+  return token;
 }
 
 export function clearInternalSessionCookie(res) {
