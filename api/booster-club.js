@@ -1,19 +1,20 @@
 import { put } from "@vercel/blob";
-import {
-  clientError,
-  clean,
-  rateLimit,
-  requireJsonRequest,
-  serverError,
-  setCors,
-  setNoStore,
-  validateAllowedKeys
-} from "./shared-utils.js";
 
 const BOOSTER_ACCOUNTS_PATH = "booster-club/accounts.json";
 const BOOSTER_LEDGER_PATH = "booster-club/ledger.json";
-const BOOSTER_ACCOUNT_FIELDS = ["name", "organization", "status", "notes"];
-const BOOSTER_ACCOUNT_STATUSES = new Set(["active", "inactive"]);
+
+function setCors(req, res) {
+  const allowedOrigin = process.env.ALLOWED_ORIGIN || "*";
+  res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function clean(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
 
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return 0;
@@ -115,15 +116,10 @@ function sortLedgerEntries(entries = []) {
 }
 
 export default async function handler(req, res) {
-  setCors(req, res, "GET, POST, OPTIONS");
-  setNoStore(res);
+  setCors(req, res);
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
-  }
-
-  if (!rateLimit(req, res)) {
-    return;
   }
 
   try {
@@ -142,27 +138,14 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    if (!requireJsonRequest(req, res)) {
-      return;
-    }
-
-    const unexpectedFields = validateAllowedKeys(req.body || {}, BOOSTER_ACCOUNT_FIELDS);
-    if (unexpectedFields.length) {
-      return clientError(res, 400, `Unexpected field: ${unexpectedFields[0]}`);
-    }
-
     const accounts = await readAccounts();
     const name = clean(req.body?.name);
     const organization = clean(req.body?.organization || "sta");
-    const status = clean(req.body?.status || "active").toLowerCase();
+    const status = clean(req.body?.status || "active");
     const notes = clean(req.body?.notes);
 
     if (!name) {
       return res.status(400).json({ error: "Booster account name is required." });
-    }
-
-    if (!BOOSTER_ACCOUNT_STATUSES.has(status)) {
-      return clientError(res, 400, "Invalid booster account status.");
     }
 
     const existingIndex = accounts.findIndex(
@@ -195,6 +178,8 @@ export default async function handler(req, res) {
       accounts: summarizeAccounts(accounts, entries)
     });
   } catch (error) {
-    return serverError(res, "Could not load booster club data.");
+    return res.status(500).json({
+      error: error.message || "Could not load booster club data."
+    });
   }
 }

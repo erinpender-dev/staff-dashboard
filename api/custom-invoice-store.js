@@ -1,5 +1,5 @@
 import { put } from "@vercel/blob";
-import { clean, isValidSimpleId } from "./shared-utils.js";
+import { clean } from "./shared-utils.js";
 import { INITIAL_CUSTOM_INVOICE_SENDERS } from "./custom-invoice-sender-config.js";
 
 const CUSTOM_INVOICE_INDEX_PATH = "custom-invoices/index.json";
@@ -136,11 +136,7 @@ function normalizeInvoiceRecord(payload = {}, { id, createdAt } = {}) {
 }
 
 function getCustomInvoicePath(id) {
-  const safeId = clean(id);
-  if (!isValidSimpleId(safeId)) {
-    throw new Error("Invalid custom invoice id.");
-  }
-  return `custom-invoices/invoices/${safeId}.json`;
+  return `custom-invoices/invoices/${clean(id)}.json`;
 }
 
 async function readPrivatePath(path) {
@@ -195,7 +191,7 @@ export function generateNextCustomInvoiceNumber(existingInvoices = [], baseDate 
 }
 
 export async function readCustomInvoice(id) {
-  if (!clean(id) || !isValidSimpleId(id)) return null;
+  if (!clean(id)) return null;
   const record = await readPrivatePath(getCustomInvoicePath(id)).catch(() => null);
   if (!record) return null;
 
@@ -258,9 +254,6 @@ export function buildCustomInvoiceIndexEntry(record = {}) {
 
 export async function saveCustomInvoiceRecord(payload = {}, existingRecord = null) {
   const id = clean(existingRecord?.id || payload.id || generateCustomInvoiceId());
-  if (!isValidSimpleId(id)) {
-    throw new Error("Invalid custom invoice id.");
-  }
   const existingInvoices = await readCustomInvoiceIndex();
   const senderProfiles = await readCustomInvoiceSenders();
   const senderProfileId = clean(
@@ -330,13 +323,8 @@ export async function saveCustomInvoiceSender(payload = {}) {
     throw new Error("Sender name is required.");
   }
 
-  const senderId = clean(payload.id) || `sender_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  if (!isValidSimpleId(senderId)) {
-    throw new Error("Invalid sender id.");
-  }
-
   const record = {
-    id: senderId,
+    id: clean(payload.id) || `sender_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     name,
     label: clean(payload.label || payload.name),
     invoice_prefix: normalizeInvoicePrefix(payload.invoice_prefix),
@@ -372,7 +360,7 @@ export async function saveCustomInvoiceSender(payload = {}) {
 
 export async function deleteCustomInvoiceSender(senderId = "") {
   const targetId = clean(senderId);
-  if (!targetId || !isValidSimpleId(targetId)) {
+  if (!targetId) {
     throw new Error("Sender id is required.");
   }
 

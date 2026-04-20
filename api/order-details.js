@@ -1,100 +1,11 @@
 import { put } from "@vercel/blob";
 import {
-  clientError,
   clean,
   getOrderDetailsPath,
-  isValidOrderId,
-  isValidShopDomain,
   parseJsonSafe,
-  rateLimit,
   readPrivateJson,
-  requireJsonRequest,
-  serverError,
-  setCors,
-  setNoStore,
-  validateAllowedKeys
+  setCors
 } from "./shared-utils.js";
-
-const ORDER_DETAIL_FIELDS = [
-  "order_id",
-  "save_scope",
-  "custom_customer_name",
-  "custom_customer_email",
-  "custom_customer_phone",
-  "prepared_for",
-  "reference",
-  "school",
-  "sent_with",
-  "delivery_notes",
-  "staff_notes",
-  "production_notes",
-  "internal_order_status",
-  "internal_payment_status",
-  "booster_credit_percentage",
-  "booster_credit_status",
-  "booster_account_name",
-  "booster_credit_amount",
-  "booster_payment_account_name",
-  "payment_received_type",
-  "payment_received_amount",
-  "payment_received_note",
-  "payment_received_check_number",
-  "partial_payments",
-  "client_contacts",
-  "contact_cards",
-  "contacts",
-  "custom_contacts",
-  "metafield_contacts",
-  "dashboard_contacts",
-  "order_contacts",
-  "organizations"
-];
-
-const ORDER_STATUS_VALUES = new Set([
-  "",
-  "unfulfilled",
-  "need to order",
-  "waiting on material",
-  "in production",
-  "production finished",
-  "ready to send",
-  "order complete"
-]);
-
-const PAYMENT_STATUS_VALUES = new Set([
-  "",
-  "unpaid",
-  "need to invoice",
-  "invoice sent",
-  "pending payment",
-  "send payment request",
-  "partial payment",
-  "payment received",
-  "refunded"
-]);
-
-const PAYMENT_TYPE_VALUES = new Set([
-  "",
-  "venmo",
-  "cashapp",
-  "paypal",
-  "apple pay",
-  "booster club",
-  "check",
-  "cash",
-  "trade",
-  "comp"
-]);
-
-const BOOSTER_CREDIT_STATUS_VALUES = new Set([
-  "",
-  "needs review/approval",
-  "approved",
-  "not approved",
-  "n/a"
-]);
-
-const SAVE_SCOPES = new Set(["", "booster_credit"]);
 
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return 0;
@@ -446,67 +357,6 @@ function normalizePartialPayments(value) {
       booster_account_name: clean(payment?.booster_account_name)
     }))
     .filter((payment) => payment.type || payment.amount || payment.check_number || payment.note || payment.booster_account_name);
-}
-
-function validateMoneyLike(value, fieldName) {
-  const raw = clean(value);
-  if (!raw) return "";
-  const amount = parseAmount(raw);
-  if (!Number.isFinite(amount) || amount < 0) {
-    return `${fieldName} must be a valid non-negative amount.`;
-  }
-  return "";
-}
-
-function validateOrderDetailsPayload(body = {}) {
-  const unexpectedFields = validateAllowedKeys(body, ORDER_DETAIL_FIELDS);
-  if (unexpectedFields.length) {
-    return `Unexpected field: ${unexpectedFields[0]}`;
-  }
-
-  const saveScope = clean(body.save_scope);
-  if (!SAVE_SCOPES.has(saveScope)) return "Invalid save scope.";
-
-  const orderStatus = clean(body.internal_order_status).toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(body, "internal_order_status") && !ORDER_STATUS_VALUES.has(orderStatus)) {
-    return "Invalid internal order status.";
-  }
-
-  const paymentStatus = clean(body.internal_payment_status).toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(body, "internal_payment_status") && !PAYMENT_STATUS_VALUES.has(paymentStatus)) {
-    return "Invalid internal payment status.";
-  }
-
-  const boosterCreditStatus = clean(body.booster_credit_status).toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(body, "booster_credit_status") && !BOOSTER_CREDIT_STATUS_VALUES.has(boosterCreditStatus)) {
-    return "Invalid booster credit status.";
-  }
-
-  const paymentType = clean(body.payment_received_type).toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(body, "payment_received_type") && !PAYMENT_TYPE_VALUES.has(paymentType)) {
-    return "Invalid payment received type.";
-  }
-
-  const amountError = validateMoneyLike(body.payment_received_amount, "Payment received amount");
-  if (amountError) return amountError;
-
-  const boosterCreditError = validateMoneyLike(body.booster_credit_percentage, "Booster credit percentage");
-  if (boosterCreditError) return boosterCreditError;
-
-  const partialPayments = parseJsonSafe(body.partial_payments, body.partial_payments);
-  if (Object.prototype.hasOwnProperty.call(body, "partial_payments")) {
-    if (!Array.isArray(partialPayments)) return "Partial payments must be an array.";
-    if (partialPayments.length > 20) return "Too many partial payments.";
-
-    for (const payment of partialPayments) {
-      const type = clean(payment?.type).toLowerCase();
-      if (!PAYMENT_TYPE_VALUES.has(type)) return "Invalid partial payment type.";
-      const partialAmountError = validateMoneyLike(payment?.amount, "Partial payment amount");
-      if (partialAmountError) return partialAmountError;
-    }
-  }
-
-  return "";
 }
 
 function normalize(body = {}, existing = {}) {
@@ -1024,22 +874,17 @@ async function fulfillOrder(shop, token, shopifyOrder) {
 
 export default async function handler(req, res) {
   setCors(req, res, "GET, POST, OPTIONS");
-  setNoStore(res);
 
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
   }
 
-  if (!rateLimit(req, res)) {
-    return;
-  }
-
   const shop = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
-  if (!shop || !token || !isValidShopDomain(shop)) {
-    serverError(res, "Shopify API is not configured.");
+  if (!shop || !token) {
+    res.status(500).json({ error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN" });
     return;
   }
 
@@ -1048,10 +893,6 @@ export default async function handler(req, res) {
       const orderId = clean(req.query.order_id);
       if (!orderId) {
         res.status(400).json({ error: "Missing order id" });
-        return;
-      }
-      if (!isValidOrderId(orderId)) {
-        clientError(res, 400, "Invalid order id");
         return;
       }
 
@@ -1100,23 +941,9 @@ export default async function handler(req, res) {
       return;
     }
 
-    if (!requireJsonRequest(req, res)) {
-      return;
-    }
-
     const orderId = clean(req.body?.order_id);
     if (!orderId) {
       res.status(400).json({ error: "Missing order id" });
-      return;
-    }
-    if (!isValidOrderId(orderId)) {
-      clientError(res, 400, "Invalid order id");
-      return;
-    }
-
-    const validationError = validateOrderDetailsPayload(req.body || {});
-    if (validationError) {
-      clientError(res, 400, validationError);
       return;
     }
 
@@ -1169,7 +996,7 @@ export default async function handler(req, res) {
       try {
         syncResults.shopify_tag_sync = await updateOrderTags(shop, token, orderId, nextTags);
       } catch (error) {
-        syncResults.shopify_tag_sync = { ok: false, error: "Could not update tags." };
+        syncResults.shopify_tag_sync = { ok: false, error: error.message || "Could not update tags." };
       }
     } else {
       syncResults.shopify_tag_sync = { skipped: true };
@@ -1179,7 +1006,7 @@ export default async function handler(req, res) {
       try {
         syncResults.shopify_paid_sync = await markOrderPaid(shop, token, orderId);
       } catch (error) {
-        syncResults.shopify_paid_sync = { ok: false, error: "Could not mark paid." };
+        syncResults.shopify_paid_sync = { ok: false, error: error.message || "Could not mark paid." };
       }
     } else {
       syncResults.shopify_paid_sync = { skipped: true };
@@ -1189,7 +1016,7 @@ export default async function handler(req, res) {
       try {
         syncResults.shopify_fulfillment_sync = await fulfillOrder(shop, token, shopifyOrder);
       } catch (error) {
-        syncResults.shopify_fulfillment_sync = { ok: false, error: "Could not fulfill order." };
+        syncResults.shopify_fulfillment_sync = { ok: false, error: error.message || "Could not fulfill order." };
       }
     } else {
       syncResults.shopify_fulfillment_sync = { skipped: true };
@@ -1203,6 +1030,8 @@ export default async function handler(req, res) {
     });
     return;
   } catch (error) {
-    serverError(res, "Could not save order details.");
+    res.status(500).json({
+      error: error.message || "Could not save order details."
+    });
   }
 }

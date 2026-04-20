@@ -1,14 +1,8 @@
 import {
-  clientError,
   clean,
-  isValidOrderId,
-  isValidShopDomain,
   parseJsonSafe,
-  rateLimit,
   readPrivateJson,
-  serverError,
-  setCors,
-  setNoStore
+  setCors
 } from "./shared-utils.js";
 
 function unique(values = []) {
@@ -480,14 +474,13 @@ function getBoosterCreditDefaults(saved, orgTags, order) {
 
 export default async function handler(req, res) {
   setCors(req, res);
-  setNoStore(res);
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
-  }
-
-  if (!rateLimit(req, res)) {
-    return;
   }
 
   if (req.method !== "GET") {
@@ -498,16 +491,14 @@ export default async function handler(req, res) {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
   const orderId = clean(req.query.order_id || req.query.id);
 
-  if (!shop || !token || !isValidShopDomain(shop)) {
-    return serverError(res, "Shopify API is not configured.");
+  if (!shop || !token) {
+    return res.status(500).json({
+      error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
+    });
   }
 
   if (!orderId) {
-    return clientError(res, 400, "Missing order id");
-  }
-
-  if (!isValidOrderId(orderId)) {
-    return clientError(res, 400, "Invalid order id");
+    return res.status(400).json({ error: "Missing order id" });
   }
 
   try {
@@ -525,7 +516,8 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: "Could not load order"
+        error: "Shopify API error",
+        details: text
       });
     }
 
@@ -721,6 +713,9 @@ current_total_tax: order.current_total_tax ?? order.total_tax,
 
     return res.status(200).json({ order: merged });
   } catch (error) {
-    return serverError(res, "Could not load order.");
+    return res.status(500).json({
+      error: "Server error",
+      details: error.message
+    });
   }
 }

@@ -1,30 +1,9 @@
 import {
-  clientError,
   clean,
-  isValidOrderId,
-  isValidShopDomain,
   parseJsonSafe,
-  rateLimit,
   readPrivateJson,
-  serverError,
-  setCors,
-  setNoStore
+  setCors
 } from "./shared-utils.js";
-
-const SHOPIFY_ORDER_STATUSES = new Set(["any", "open", "closed", "cancelled"]);
-const SHOPIFY_FULFILLMENT_STATUSES = new Set(["", "shipped", "partial", "unshipped", "any", "unfulfilled"]);
-const SHOPIFY_FINANCIAL_STATUSES = new Set([
-  "",
-  "authorized",
-  "pending",
-  "paid",
-  "partially_paid",
-  "refunded",
-  "voided",
-  "partially_refunded",
-  "any",
-  "unpaid"
-]);
 
 function normalizeContact(contact = {}) {
   return {
@@ -865,14 +844,13 @@ async function fetchOrdersFromShopify({
 
 export default async function handler(req, res) {
   setCors(req, res);
-  setNoStore(res);
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
-  }
-
-  if (!rateLimit(req, res)) {
-    return;
   }
 
   if (req.method !== "GET") {
@@ -883,32 +861,17 @@ export default async function handler(req, res) {
     const shop = process.env.SHOPIFY_STORE;
     const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
-    if (!shop || !token || !isValidShopDomain(shop)) {
-      return serverError(res, "Shopify API is not configured.");
+    if (!shop || !token) {
+      return res.status(500).json({
+        error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
+      });
     }
 
-    const status = clean(req.query.status || "any").toLowerCase();
-    const fulfillmentStatus = clean(req.query.fulfillment_status || "").toLowerCase();
-    const financialStatus = clean(req.query.financial_status || "").toLowerCase();
-    const parsedLimit = Number.parseInt(clean(req.query.limit || "100"), 10);
-    const limit = Math.min(Math.max(Number.isFinite(parsedLimit) ? parsedLimit : 100, 1), 250);
+    const status = clean(req.query.status || "any");
+    const fulfillmentStatus = clean(req.query.fulfillment_status || "");
+    const financialStatus = clean(req.query.financial_status || "");
+    const limit = Number(req.query.limit || 100);
     const debugOrderId = clean(req.query.debug_order_id || "");
-
-    if (!SHOPIFY_ORDER_STATUSES.has(status)) {
-      return clientError(res, 400, "Invalid order status.");
-    }
-
-    if (!SHOPIFY_FULFILLMENT_STATUSES.has(fulfillmentStatus)) {
-      return clientError(res, 400, "Invalid fulfillment status.");
-    }
-
-    if (!SHOPIFY_FINANCIAL_STATUSES.has(financialStatus)) {
-      return clientError(res, 400, "Invalid financial status.");
-    }
-
-    if (debugOrderId && !isValidOrderId(debugOrderId)) {
-      return clientError(res, 400, "Invalid debug order id.");
-    }
 
     const rawOrders = await fetchOrdersFromShopify({
       shop,
@@ -974,7 +937,7 @@ export default async function handler(req, res) {
           } catch (error) {
             if (debugContact) {
               debugContact.fallback_contact = {
-                error: "Fallback contact lookup failed"
+                error: error.message || "Unknown fallback lookup error"
               };
             }
             metafieldContact = metafieldContact || emptyMetafieldContactPayload();
@@ -1014,6 +977,8 @@ export default async function handler(req, res) {
       orders
     });
   } catch (error) {
-    return serverError(res, "Could not load orders.");
+    return res.status(500).json({
+      error: error.message || "Could not load orders."
+    });
   }
 }
