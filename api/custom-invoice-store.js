@@ -305,13 +305,27 @@ export async function saveCustomInvoiceRecord(payload = {}, existingRecord = nul
 }
 
 export async function readCustomInvoiceSenders() {
-  const data = await readPrivatePath(CUSTOM_INVOICE_SENDERS_PATH);
-  if (Array.isArray(data)) {
-    return normalizeSenderList(data);
+  try {
+    const data = await readPrivatePath(CUSTOM_INVOICE_SENDERS_PATH);
+    const senderEntries = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.senders)
+        ? data.senders
+        : Array.isArray(data?.profiles)
+          ? data.profiles
+          : Array.isArray(data?.items)
+            ? data.items
+            : Array.isArray(data?.data)
+              ? data.data
+              : null;
+
+    if (senderEntries) {
+      return normalizeSenderList(senderEntries);
+    }
+  } catch (error) {
+    console.error("Custom invoice sender profile read failed.", error);
   }
-  if (Array.isArray(data?.senders)) {
-    return normalizeSenderList(data.senders);
-  }
+
   return getInitialSenders();
 }
 
