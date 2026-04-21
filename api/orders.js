@@ -1,6 +1,7 @@
 import {
   clean,
   parseJsonSafe,
+  readPrivateDraftJson,
   readPrivateJson,
   setCors
 } from "./shared-utils.js";
@@ -843,6 +844,217 @@ async function fetchOrdersFromShopify({
   return Array.isArray(data.orders) ? data.orders : [];
 }
 
+async function fetchDraftOrdersFromShopify({
+  shop,
+  token,
+  status = "open",
+  limit = 100
+}) {
+  const params = new URLSearchParams();
+  params.set("status", status || "open");
+  params.set("limit", String(limit || 100));
+  params.set("order", "created_at desc");
+
+  const response = await fetch(`https://${shop}/admin/api/2025-10/draft_orders.json?${params.toString()}`, {
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json"
+    }
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Shopify draft orders fetch failed: ${text}`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid Shopify draft orders response: ${text}`);
+  }
+
+  return Array.isArray(data.draft_orders) ? data.draft_orders : [];
+}
+
+function getDraftCustomerName(draftOrder) {
+  const customerName = [
+    draftOrder.customer?.first_name,
+    draftOrder.customer?.last_name
+  ].filter(Boolean).join(" ");
+
+  return clean(
+    customerName ||
+      draftOrder.billing_address?.name ||
+      draftOrder.shipping_address?.name ||
+      "No customer name"
+  );
+}
+
+function getDraftCustomerEmail(draftOrder) {
+  return clean(
+    draftOrder.email ||
+      draftOrder.customer?.email ||
+      ""
+  );
+}
+
+function getDraftCustomerPhone(draftOrder) {
+  return clean(
+    draftOrder.customer?.phone ||
+      draftOrder.billing_address?.phone ||
+      draftOrder.shipping_address?.phone ||
+      ""
+  );
+}
+
+function mapDraftOrder(draftOrder, saved = {}) {
+  const tags = getOrderTags(draftOrder);
+  const lineItems = Array.isArray(draftOrder.line_items)
+    ? draftOrder.line_items.map((item) => ({
+        id: item.id,
+        variant_id: item.variant_id,
+        product_id: item.product_id,
+        sku: clean(item.sku),
+        title: clean(item.title || item.name),
+        variant_title: clean(item.variant_title),
+        vendor: clean(item.vendor),
+        quantity: Number(item.quantity || 0),
+        price: clean(item.price),
+        product_tags: [],
+        org_tags: []
+      }))
+    : [];
+  const customerName = getDraftCustomerName(draftOrder);
+  const customerEmail = getDraftCustomerEmail(draftOrder);
+  const customerPhone = getDraftCustomerPhone(draftOrder);
+
+  const mapped = {
+    id: draftOrder.id,
+    admin_graphql_api_id: draftOrder.admin_graphql_api_id,
+    record_type: "draft_order",
+    draft_order: true,
+    manual_order: false,
+    order_channel: "draft",
+    order_number: draftOrder.name,
+    name: clean(draftOrder.name),
+    created_at: draftOrder.created_at,
+    processed_at: "",
+    updated_at: draftOrder.updated_at,
+    completed_at: draftOrder.completed_at,
+    order_id: draftOrder.order_id || null,
+    status: clean(draftOrder.status || "open").toLowerCase(),
+    invoice_sent_at: draftOrder.invoice_sent_at || null,
+    invoice_url: draftOrder.invoice_url || "",
+
+    currency: clean(draftOrder.currency),
+    total_price: clean(draftOrder.total_price),
+    subtotal_price: clean(draftOrder.subtotal_price),
+    total_tax: clean(draftOrder.total_tax),
+    total_discounts: clean(draftOrder.applied_discount?.amount || draftOrder.total_discounts || ""),
+
+    financial_status: clean(saved.internal_payment_status || draftOrder.status || "draft").toLowerCase(),
+    fulfillment_status: clean(saved.internal_order_status || "draft").toLowerCase(),
+    source_name: "shopify_draft_order",
+    gateway: "",
+    note: clean(draftOrder.note),
+
+    tags,
+    order_tags: tags,
+    org_tags: detectOrgTagsFromValues(tags),
+    line_items: lineItems,
+
+    shipping_address: draftOrder.shipping_address || null,
+    billing_address: draftOrder.billing_address || null,
+    shipping_lines: draftOrder.shipping_line ? [draftOrder.shipping_line] : [],
+    note_attributes: Array.isArray(draftOrder.note_attributes) ? draftOrder.note_attributes : [],
+
+    shopify_customer_name: customerName,
+    shopify_customer_email: customerEmail,
+    shopify_customer_phone: customerPhone,
+
+    custom_customer_name: clean(saved.custom_customer_name) || customerName,
+    custom_customer_email: clean(saved.custom_customer_email) || customerEmail,
+    custom_customer_phone: clean(saved.custom_customer_phone) || customerPhone,
+
+    prepared_for: clean(saved.prepared_for) || getPreparedForFromShopify(draftOrder),
+    reference: getReference(saved, clean(draftOrder.name)),
+    school: clean(saved.school),
+    sent_with: clean(saved.sent_with),
+
+    delivery_notes: clean(saved.delivery_notes),
+    staff_notes: clean(saved.staff_notes),
+    production_notes: clean(saved.production_notes),
+
+    internal_order_status: clean(saved.internal_order_status),
+    internal_payment_status: clean(saved.internal_payment_status),
+    payment_received_type: clean(saved.payment_received_type),
+    payment_received_amount: clean(saved.payment_received_amount),
+    payment_received_note: clean(saved.payment_received_note),
+    payment_received_check_number: clean(saved.payment_received_check_number),
+    partial_payments: getPartialPayments(saved),
+    payment_details_missing: false,
+    booster_account_name: clean(saved.booster_account_name),
+    booster_credit_percentage: clean(saved.booster_credit_percentage),
+    booster_credit_status: clean(saved.booster_credit_status),
+    booster_credit_needs_review: false,
+    booster_credit_amount: clean(saved.booster_credit_amount),
+    booster_payment_account_name: clean(saved.booster_payment_account_name),
+
+    client_contacts: getSavedContacts(saved),
+    contact_cards: getSavedContacts(saved),
+    contacts: getSavedContacts(saved),
+    custom_contacts: normalizeContactsFromAny(saved?.custom_contacts),
+    metafield_contacts: [],
+    dashboard_contacts: normalizeContactsFromAny(saved?.dashboard_contacts),
+    order_contacts: getSavedContacts(saved),
+    organizations: getOrganizations(saved, getSavedContacts(saved)),
+
+    _search: ""
+  };
+
+  mapped._search = buildSearchText(mapped);
+  return mapped;
+}
+
+async function handleDraftOrdersList(req, res, shop, token) {
+  const status = clean(req.query.status || "open");
+  const limit = Number(req.query.limit || 100);
+  const rawDraftOrders = await fetchDraftOrdersFromShopify({
+    shop,
+    token,
+    status,
+    limit
+  });
+
+  const orders = await Promise.all(
+    rawDraftOrders.map(async (draftOrder) => {
+      const saved = await readPrivateDraftJson(draftOrder.id).catch(() => null);
+      return mapDraftOrder(draftOrder, saved || {});
+    })
+  );
+
+  orders.sort((a, b) => {
+    const aTime = new Date(a.created_at).getTime();
+    const bTime = new Date(b.created_at).getTime();
+    return bTime - aTime;
+  });
+
+  const stats = {
+    total: orders.length,
+    open: orders.filter((order) => order.status === "open").length,
+    invoice_sent: orders.filter((order) => order.status === "invoice_sent").length,
+    completed: orders.filter((order) => order.status === "completed").length
+  };
+
+  return res.status(200).json({
+    ok: true,
+    stats,
+    orders
+  });
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -877,6 +1089,11 @@ export default async function handler(req, res) {
     const financialStatus = clean(req.query.financial_status || "");
     const limit = Number(req.query.limit || 100);
     const debugOrderId = clean(req.query.debug_order_id || "");
+    const type = clean(req.query.type || req.query.record_type || "").toLowerCase();
+
+    if (type === "draft" || type === "draft_order") {
+      return await handleDraftOrdersList(req, res, shop, token);
+    }
 
     const rawOrders = await fetchOrdersFromShopify({
       shop,

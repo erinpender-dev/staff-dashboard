@@ -1,8 +1,10 @@
 import { put } from "@vercel/blob";
 import {
   clean,
+  getDraftOrderDetailsPath,
   getOrderDetailsPath,
   parseJsonSafe,
+  readPrivateDraftJson,
   readPrivateJson,
   setCors
 } from "./shared-utils.js";
@@ -873,6 +875,59 @@ async function fulfillOrder(shop, token, shopifyOrder) {
   };
 }
 
+async function handleDraftOrderDetails(req, res) {
+  if (req.method === "GET") {
+    const draftOrderId = clean(req.query.draft_order_id || req.query.order_id || req.query.id);
+    if (!draftOrderId) {
+      res.status(400).json({ error: "Missing draft order id" });
+      return;
+    }
+
+    const saved = await readPrivateDraftJson(draftOrderId).catch(() => null);
+    res.status(200).json({ ok: true, data: saved || {} });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  const draftOrderId = clean(req.body?.draft_order_id || req.body?.order_id || req.body?.id);
+  if (!draftOrderId) {
+    res.status(400).json({ error: "Missing draft order id" });
+    return;
+  }
+
+  const existing = await readPrivateDraftJson(draftOrderId).catch(() => null);
+  const normalized = {
+    ...normalize(req.body, existing || {}),
+    record_type: "draft_order",
+    draft_order_id: draftOrderId,
+    updated_at: new Date().toISOString()
+  };
+
+  await put(getDraftOrderDetailsPath(draftOrderId), JSON.stringify(normalized, null, 2), {
+    access: "private",
+    contentType: "application/json",
+    token: process.env.BLOB_READ_WRITE_TOKEN,
+    addRandomSuffix: false,
+    allowOverwrite: true
+  });
+
+  res.status(200).json({
+    ok: true,
+    draft_order_id: draftOrderId,
+    data: normalized,
+    sync: {
+      saved_to_blob: true,
+      shopify_paid_sync: { skipped: true },
+      shopify_tag_sync: { skipped: true },
+      shopify_fulfillment_sync: { skipped: true }
+    }
+  });
+}
+
 export default async function handler(req, res) {
   setCors(req, res, "GET, POST, OPTIONS");
 
@@ -885,15 +940,20 @@ export default async function handler(req, res) {
     return;
   }
 
-  const shop = process.env.SHOPIFY_STORE;
-  const token = process.env.SHOPIFY_ACCESS_TOKEN;
-
-  if (!shop || !token) {
-    res.status(500).json({ error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN" });
-    return;
-  }
-
   try {
+    const type = clean(req.query?.type || req.query?.record_type || req.body?.type || req.body?.record_type).toLowerCase();
+    if (type === "draft" || type === "draft_order") {
+      return await handleDraftOrderDetails(req, res);
+    }
+
+    const shop = process.env.SHOPIFY_STORE;
+    const token = process.env.SHOPIFY_ACCESS_TOKEN;
+
+    if (!shop || !token) {
+      res.status(500).json({ error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN" });
+      return;
+    }
+
     if (req.method === "GET") {
       const orderId = clean(req.query.order_id);
       if (!orderId) {

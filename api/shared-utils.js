@@ -39,7 +39,19 @@ export function getOrderDetailsPath(orderId) {
   return `order-details/${orderId}.json`;
 }
 
+export function getDraftOrderDetailsPath(draftOrderId) {
+  return `draft-order-details/${draftOrderId}.json`;
+}
+
 export async function readPrivateJson(orderId) {
+  return readPrivatePath(getOrderDetailsPath(orderId));
+}
+
+export async function readPrivateDraftJson(draftOrderId) {
+  return readPrivatePath(getDraftOrderDetailsPath(draftOrderId));
+}
+
+export async function readPrivatePath(path) {
   const baseUrl = process.env.BLOB_BASE_URL;
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
@@ -47,7 +59,7 @@ export async function readPrivateJson(orderId) {
     throw new Error("Missing BLOB_BASE_URL or BLOB_READ_WRITE_TOKEN");
   }
 
-  const url = `${baseUrl}/${getOrderDetailsPath(orderId)}`;
+  const url = `${baseUrl}/${path}`;
   const response = await fetch(`${url}?ts=${Date.now()}`, {
     headers: {
       Authorization: `Bearer ${token}`,

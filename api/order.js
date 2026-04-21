@@ -1,10 +1,13 @@
 import {
   clean,
+  getOrderDetailsPath,
   parseJsonSafe,
+  readPrivateDraftJson,
   readPrivateJson,
   setCors
 } from "./shared-utils.js";
 import { requireInternalAuth } from "./_lib/internal-auth.js";
+import { put } from "@vercel/blob";
 
 function unique(values = []) {
   return [...new Set(values.filter(Boolean))];
@@ -473,8 +476,339 @@ function getBoosterCreditDefaults(saved, orgTags, order) {
   };
 }
 
+function getDraftId(req) {
+  return clean(req.query?.draft_order_id || req.query?.order_id || req.query?.id || req.body?.draft_order_id || req.body?.order_id || req.body?.id);
+}
+
+function normalizeDraftInput(input = {}) {
+  const source = input?.draft_order && typeof input.draft_order === "object"
+    ? input.draft_order
+    : input;
+  const draftOrder = {};
+  const copyFields = [
+    "customer_id",
+    "use_customer_default_address",
+    "email",
+    "line_items",
+    "shipping_address",
+    "billing_address",
+    "note",
+    "note_attributes",
+    "tags",
+    "shipping_line",
+    "applied_discount",
+    "tax_exempt"
+  ];
+
+  for (const field of copyFields) {
+    if (Object.prototype.hasOwnProperty.call(source, field)) {
+      draftOrder[field] = source[field];
+    }
+  }
+
+  if (Array.isArray(draftOrder.line_items)) {
+    draftOrder.line_items = draftOrder.line_items
+      .map((item) => {
+        if (item?.variant_id) {
+          const normalized = {
+            variant_id: Number(item.variant_id),
+            quantity: Number(item.quantity || 1)
+          };
+          if (Array.isArray(item.properties)) normalized.properties = item.properties;
+          if (item.applied_discount) normalized.applied_discount = item.applied_discount;
+          return normalized;
+        }
+
+        if (clean(item?.title)) {
+          const normalized = {
+            title: clean(item.title),
+            price: clean(item.price || "0.00"),
+            quantity: Number(item.quantity || 1),
+            taxable: Boolean(item.taxable),
+            requires_shipping: item.requires_shipping !== false
+          };
+          if (Array.isArray(item.properties)) normalized.properties = item.properties;
+          if (item.applied_discount) normalized.applied_discount = item.applied_discount;
+          return normalized;
+        }
+
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  if (Array.isArray(draftOrder.tags)) {
+    draftOrder.tags = draftOrder.tags.map((tag) => clean(tag)).filter(Boolean).join(", ");
+  }
+
+  return draftOrder;
+}
+
+async function shopifyRestRequest(shop, token, path, options = {}) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/${path}`, {
+    ...options,
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await response.text();
+  const json = text ? JSON.parse(text) : {};
+
+  if (!response.ok) {
+    throw new Error(json?.errors || json?.error || text || "Shopify request failed");
+  }
+
+  return json;
+}
+
+function getDraftCustomerName(draftOrder) {
+  const fullName = [draftOrder.customer?.first_name, draftOrder.customer?.last_name]
+    .filter(Boolean)
+    .join(" ");
+
+  return clean(
+    fullName ||
+      draftOrder.billing_address?.name ||
+      draftOrder.shipping_address?.name ||
+      "No customer name"
+  );
+}
+
+function mapDraftOrderDetail(draftOrder, saved = {}) {
+  const savedContacts = getSavedContacts(saved);
+  const customerName = getDraftCustomerName(draftOrder);
+  const customerEmail = clean(draftOrder.email || draftOrder.customer?.email);
+  const customerPhone = clean(draftOrder.customer?.phone || draftOrder.billing_address?.phone || draftOrder.shipping_address?.phone);
+  const orderTags = getOrderTags(draftOrder);
+  const lineItems = (draftOrder.line_items || []).map((item) => {
+    const qty = Number(item.quantity || 0);
+    const price = Number(item.price || 0);
+
+    return {
+      id: item.id,
+      title: item.title || item.name,
+      variant_title: item.variant_title,
+      sku: item.sku,
+      quantity: item.quantity,
+      current_quantity: item.quantity,
+      fulfillable_quantity: item.quantity,
+      vendor: item.vendor,
+      price: item.price,
+      original_price: item.original_price ?? item.price,
+      total_discount: item.applied_discount?.amount || "",
+      final_line_price: qty > 0 ? String(qty * price) : null,
+      current_total_price: qty > 0 ? String(qty * price) : null,
+      is_removed: qty <= 0,
+      variant_id: item.variant_id,
+      product_id: item.product_id,
+      product_tags: [],
+      org_tags: []
+    };
+  });
+
+  return {
+    id: draftOrder.id,
+    name: draftOrder.name,
+    order_number: draftOrder.name,
+    record_type: "draft_order",
+    draft_order: true,
+    order_id: draftOrder.order_id || null,
+    status: clean(draftOrder.status || "open").toLowerCase(),
+    invoice_sent_at: draftOrder.invoice_sent_at || null,
+    invoice_url: draftOrder.invoice_url || "",
+    created_at: draftOrder.created_at,
+    updated_at: draftOrder.updated_at,
+    completed_at: draftOrder.completed_at,
+    financial_status: clean(saved.internal_payment_status || draftOrder.status || "draft").toLowerCase(),
+    fulfillment_status: clean(saved.internal_order_status || "draft").toLowerCase(),
+    total_price: draftOrder.total_price,
+    subtotal_price: draftOrder.subtotal_price,
+    total_discounts: draftOrder.applied_discount?.amount || "",
+    total_tax: draftOrder.total_tax,
+    current_total_price: draftOrder.total_price,
+    current_subtotal_price: draftOrder.subtotal_price,
+    current_total_discounts: draftOrder.applied_discount?.amount || "",
+    current_total_tax: draftOrder.total_tax,
+    currency: draftOrder.currency,
+    tags: orderTags,
+    order_tags: orderTags,
+    org_tags: detectOrgTagsFromValues(orderTags),
+    note: draftOrder.note || "",
+    manual_order: false,
+    order_channel: "draft",
+
+    shopify_customer_name: customerName,
+    shopify_customer_email: customerEmail,
+    shopify_customer_phone: customerPhone,
+    shopify_prepared_for: getPreparedForFromShopify(draftOrder),
+    custom_customer_name: clean(saved.custom_customer_name) || customerName,
+    custom_customer_email: clean(saved.custom_customer_email) || customerEmail,
+    custom_customer_phone: clean(saved.custom_customer_phone) || customerPhone,
+    customer_name: clean(saved.custom_customer_name) || customerName,
+    customer_email: clean(saved.custom_customer_email) || customerEmail,
+    customer_phone: clean(saved.custom_customer_phone) || customerPhone,
+    prepared_for: clean(saved.prepared_for) || getPreparedForFromShopify(draftOrder),
+
+    school: clean(saved.school),
+    sent_with: clean(saved.sent_with),
+    delivery_notes: clean(saved.delivery_notes),
+    staff_notes: clean(saved.staff_notes),
+    production_notes: clean(saved.production_notes),
+    internal_order_status: clean(saved.internal_order_status),
+    internal_payment_status: clean(saved.internal_payment_status),
+    booster_account_name: clean(saved.booster_account_name),
+    booster_credit_percentage: clean(saved.booster_credit_percentage),
+    booster_credit_status: clean(saved.booster_credit_status),
+    booster_credit_needs_review: false,
+    booster_credit_amount: clean(saved.booster_credit_amount),
+    booster_payment_account_name: clean(saved.booster_payment_account_name),
+    payment_received_note: clean(saved.payment_received_note),
+    custom_updated_at: clean(saved.updated_at),
+
+    client_contacts: savedContacts,
+    contact_cards: savedContacts,
+    contacts: savedContacts,
+    custom_contacts: normalizeContactsFromAny(saved?.custom_contacts),
+    metafield_contacts: [],
+    dashboard_contacts: normalizeContactsFromAny(saved?.dashboard_contacts),
+    order_contacts: savedContacts,
+    organizations: getOrganizations(saved, savedContacts),
+
+    shipping_address: draftOrder.shipping_address || null,
+    billing_address: draftOrder.billing_address || null,
+    shipping_line: draftOrder.shipping_line || null,
+    note_attributes: Array.isArray(draftOrder.note_attributes) ? draftOrder.note_attributes : [],
+    line_items: lineItems
+  };
+}
+
+async function copyDraftMetadataToOrder(draftOrderId, orderId) {
+  if (!draftOrderId || !orderId) {
+    return { skipped: true, reason: "Missing draft or order id." };
+  }
+
+  const draftMetadata = await readPrivateDraftJson(draftOrderId).catch(() => null);
+  if (!draftMetadata) {
+    return { skipped: true, reason: "No draft metadata found." };
+  }
+
+  const existingOrderMetadata = await readPrivateJson(orderId).catch(() => null);
+  const merged = {
+    ...(existingOrderMetadata || {}),
+    ...draftMetadata,
+    source_draft_order_id: clean(draftOrderId),
+    migrated_from_draft_at: new Date().toISOString()
+  };
+
+  await put(getOrderDetailsPath(orderId), JSON.stringify(merged, null, 2), {
+    access: "private",
+    contentType: "application/json",
+    token: process.env.BLOB_READ_WRITE_TOKEN,
+    addRandomSuffix: false,
+    allowOverwrite: true
+  });
+
+  return { ok: true, order_id: orderId, draft_order_id: draftOrderId };
+}
+
+async function handleDraftOrder(req, res, shop, token) {
+  const draftOrderId = getDraftId(req);
+
+  if (req.method === "GET") {
+    if (!draftOrderId) {
+      return res.status(400).json({ error: "Missing draft order id" });
+    }
+
+    const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}.json`);
+    const draftOrder = data.draft_order;
+    if (!draftOrder) {
+      return res.status(404).json({ error: "Draft order not found" });
+    }
+
+    const saved = await readPrivateDraftJson(draftOrderId).catch(() => null);
+    return res.status(200).json({ order: mapDraftOrderDetail(draftOrder, saved || {}) });
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const mode = clean(req.body?.mode || req.body?.action || "").toLowerCase();
+
+  if (mode === "create") {
+    const draftOrder = normalizeDraftInput(req.body);
+    if (!Array.isArray(draftOrder.line_items) || !draftOrder.line_items.length) {
+      return res.status(400).json({ error: "Add at least one draft line item." });
+    }
+
+    const data = await shopifyRestRequest(shop, token, "draft_orders.json", {
+      method: "POST",
+      body: JSON.stringify({ draft_order: draftOrder })
+    });
+    return res.status(200).json({ ok: true, order: mapDraftOrderDetail(data.draft_order, {}) });
+  }
+
+  if (!draftOrderId) {
+    return res.status(400).json({ error: "Missing draft order id" });
+  }
+
+  if (mode === "update") {
+    const draftOrder = normalizeDraftInput(req.body);
+    draftOrder.id = Number(draftOrderId);
+
+    const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}.json`, {
+      method: "PUT",
+      body: JSON.stringify({ draft_order: draftOrder })
+    });
+    const saved = await readPrivateDraftJson(draftOrderId).catch(() => null);
+    return res.status(200).json({ ok: true, order: mapDraftOrderDetail(data.draft_order, saved || {}) });
+  }
+
+  if (mode === "send_invoice") {
+    const invoice = req.body?.email || req.body?.draft_order_invoice || {};
+    const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}/send_invoice.json`, {
+      method: "POST",
+      body: JSON.stringify({ draft_order_invoice: invoice })
+    });
+    const draftOrder = data.draft_order || null;
+    return res.status(200).json({ ok: true, order: draftOrder ? mapDraftOrderDetail(draftOrder, {}) : null });
+  }
+
+  if (mode === "complete") {
+    const params = new URLSearchParams();
+    if (req.body?.payment_pending === true || req.body?.payment_pending === "true") {
+      params.set("payment_pending", "true");
+    }
+
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}/complete.json${suffix}`, {
+      method: "PUT"
+    });
+    const draftOrder = data.draft_order || {};
+    const orderId = clean(draftOrder.order_id || data.order?.id || req.body?.order_id);
+    const metadataCopy = orderId
+      ? await copyDraftMetadataToOrder(draftOrderId, orderId).catch((error) => ({
+          ok: false,
+          error: error.message || "Could not copy draft metadata."
+        }))
+      : { skipped: true, reason: "Shopify did not return an order id." };
+
+    return res.status(200).json({
+      ok: true,
+      order: mapDraftOrderDetail(draftOrder, {}),
+      order_id: orderId || null,
+      metadata_copy: metadataCopy
+    });
+  }
+
+  return res.status(400).json({ error: "Unsupported draft order mode." });
+}
+
 export default async function handler(req, res) {
-  setCors(req, res);
+  setCors(req, res, "GET, POST, OPTIONS");
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
@@ -488,19 +822,32 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
   const shop = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
-  const orderId = clean(req.query.order_id || req.query.id);
 
   if (!shop || !token) {
     return res.status(500).json({
       error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN"
     });
   }
+
+  const type = clean(req.query.type || req.query.record_type || req.body?.type || req.body?.record_type).toLowerCase();
+  if (type === "draft" || type === "draft_order") {
+    try {
+      return await handleDraftOrder(req, res, shop, token);
+    } catch (error) {
+      return res.status(500).json({
+        error: "Draft order error",
+        details: error.message || "Could not handle draft order."
+      });
+    }
+  }
+
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const orderId = clean(req.query.order_id || req.query.id);
 
   if (!orderId) {
     return res.status(400).json({ error: "Missing order id" });
