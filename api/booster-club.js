@@ -1,23 +1,9 @@
-import { put } from "@vercel/blob";
+import { get, put } from "@vercel/blob";
 import { requireInternalAuth } from "./_lib/internal-auth.js";
+import { clean, setCors } from "./shared-utils.js";
 
 const BOOSTER_ACCOUNTS_PATH = "booster-club/accounts.json";
 const BOOSTER_LEDGER_PATH = "booster-club/ledger.json";
-
-function setCors(req, res) {
-  const requestOrigin = req?.headers?.origin || "";
-  const allowedOrigin = requestOrigin || process.env.ALLOWED_ORIGIN || "*";
-  res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-}
-
-function clean(value) {
-  if (value === null || value === undefined) return "";
-  return String(value).trim();
-}
 
 function parseAmount(value) {
   if (value === null || value === undefined || value === "") return 0;
@@ -28,28 +14,24 @@ function parseAmount(value) {
 }
 
 async function readPrivatePath(path) {
-  const baseUrl = process.env.BLOB_BASE_URL;
   const token = process.env.BLOB_READ_WRITE_TOKEN;
 
-  if (!baseUrl || !token) {
-    throw new Error("Missing BLOB_BASE_URL or BLOB_READ_WRITE_TOKEN");
+  if (!token) {
+    throw new Error("Missing BLOB_READ_WRITE_TOKEN");
   }
 
-  const response = await fetch(`${baseUrl}/${path}?ts=${Date.now()}`, {
+  const result = await get(path, {
+    access: "private",
+    token,
+    useCache: false,
     headers: {
-      Authorization: `Bearer ${token}`,
       "Cache-Control": "no-cache"
-    },
-    cache: "no-store"
+    }
   });
 
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Blob read failed: ${text}`);
-  }
+  if (!result?.stream) return null;
 
-  return await response.json();
+  return await new Response(result.stream).json();
 }
 
 async function writePrivatePath(path, data) {
@@ -119,7 +101,7 @@ function sortLedgerEntries(entries = []) {
 }
 
 export default async function handler(req, res) {
-  setCors(req, res);
+  setCors(req, res, "GET, POST, OPTIONS");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
