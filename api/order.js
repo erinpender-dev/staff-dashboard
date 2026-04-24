@@ -908,22 +908,32 @@ export default async function handler(req, res) {
         const productTags = Array.isArray(productTagsById[String(item.product_id)])
           ? productTagsById[String(item.product_id)]
           : [];
-
-        const rawCurrentQty =
-          item.current_quantity ??
-          item.fulfillable_quantity ??
-          item.quantity;
-
-        const qty = Number(rawCurrentQty) || 0;
+        const purchasedQty = Number(item.quantity || 0);
+        const currentQty =
+          item.current_quantity === null || item.current_quantity === undefined
+            ? null
+            : Number(item.current_quantity || 0);
+        const fulfillableQty =
+          item.fulfillable_quantity === null || item.fulfillable_quantity === undefined
+            ? null
+            : Number(item.fulfillable_quantity || 0);
+        const effectiveQty =
+          purchasedQty > 0
+            ? purchasedQty
+            : (currentQty && currentQty > 0
+              ? currentQty
+              : (fulfillableQty && fulfillableQty > 0 ? fulfillableQty : 0));
 
         return {
           id: item.id,
           title: item.title,
           variant_title: item.variant_title,
           sku: item.sku,
-          quantity: item.quantity,
-          current_quantity: item.current_quantity ?? null,
-          fulfillable_quantity: item.fulfillable_quantity ?? null,
+          variant_id: item.variant_id ?? null,
+          product_id: item.product_id ?? null,
+          quantity: purchasedQty,
+          current_quantity: currentQty,
+          fulfillable_quantity: fulfillableQty,
           vendor: item.vendor,
           price: item.price,
           original_price: item.original_price ?? item.price,
@@ -931,20 +941,17 @@ export default async function handler(req, res) {
           final_line_price:
             item.final_line_price ??
             item.current_total_price ??
-            (qty > 0 ? String(qty * Number(item.price || 0)) : null),
+            (effectiveQty > 0 ? String(effectiveQty * Number(item.price || 0)) : null),
           current_total_price:
             item.current_total_price ??
-            (qty > 0 ? String(qty * Number(item.price || 0)) : null),
-          is_removed: qty <= 0,
+            item.final_line_price ??
+            (effectiveQty > 0 ? String(effectiveQty * Number(item.price || 0)) : null),
+          is_removed: effectiveQty <= 0,
           product_tags: productTags,
           org_tags: detectOrgTagsFromValues(productTags)
         };
       })
-      .filter((item) => {
-        if (item.current_quantity !== null) return Number(item.current_quantity) > 0;
-        if (item.fulfillable_quantity !== null) return Number(item.fulfillable_quantity) > 0;
-        return Number(item.quantity) > 0;
-      });
+      .filter((item) => Number(item.quantity || item.current_quantity || item.fulfillable_quantity || 0) > 0);
 
     const orgTags = [...new Set([
       ...lineItems.flatMap((item) => item.org_tags || []),

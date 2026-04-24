@@ -667,7 +667,15 @@ function mapOrder(order, saved = {}, extras = {}) {
           variant_title: clean(item.variant_title),
           vendor: clean(item.vendor),
           quantity: Number(item.quantity || 0),
+          current_quantity:
+            item.current_quantity === null || item.current_quantity === undefined
+              ? null
+              : Number(item.current_quantity || 0),
           price: clean(item.price),
+          original_price: clean(item.original_price ?? item.price),
+          final_line_price: clean(item.final_line_price ?? item.current_total_price),
+          current_total_price: clean(item.current_total_price ?? item.final_line_price),
+          total_discount: clean(item.total_discount),
           fulfillable_quantity: Number(item.fulfillable_quantity || 0),
           fulfillment_status: clean(item.fulfillment_status),
           product_tags: productTags,
