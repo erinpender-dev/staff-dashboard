@@ -6,7 +6,7 @@ const SESSION_TTL_SECONDS = 60 * 60 * 12;
 // Edit internal staff logins here. Passwords stay server-side in this API file.
 // You can also override passwords in Vercel env vars without changing code.
 const INTERNAL_USERS = {
-  erin: {
+  Erin: {
     username: "Erin",
     displayName: "Erin",
     password: process.env.INTERNAL_USER_ERIN_PASSWORD || "Erin123!"
@@ -141,7 +141,7 @@ export function verifySessionToken(token) {
   }
 
   const username = clean(session.username) || clean(session.staffName);
-  const configuredUser = INTERNAL_USERS[username.toLowerCase()];
+  const configuredUser = INTERNAL_USERS[username];
   if (!configuredUser) return null;
 
   const displayName = clean(configuredUser.displayName) || clean(configuredUser.username) || username;
@@ -193,7 +193,7 @@ export async function requireInternalAuth(req, res) {
 }
 
 export function validateInternalUser(username, password) {
-  const normalizedUsername = clean(username).toLowerCase();
+  const normalizedUsername = clean(username);
   const providedPassword = clean(password);
   const user = INTERNAL_USERS[normalizedUsername];
 
