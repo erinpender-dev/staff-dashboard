@@ -1,10 +1,10 @@
 import { setCors } from "./shared-utils.js";
 import {
   clearInternalSessionCookie,
-  createSharedStaffSession,
+  createStaffSession,
   getInternalAuth,
-  passcodeMatches,
-  setInternalSessionCookie
+  setInternalSessionCookie,
+  validateInternalUser
 } from "./_lib/internal-auth.js";
 
 export default async function handler(req, res) {
@@ -23,12 +23,12 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const passcode = req.body?.passcode;
-    if (!passcodeMatches(passcode)) {
-      return res.status(401).json({ ok: false, error: "Invalid passcode." });
+    const user = validateInternalUser(req.body?.username, req.body?.password);
+    if (!user) {
+      return res.status(401).json({ ok: false, error: "Invalid username or password." });
     }
 
-    const session = createSharedStaffSession();
+    const session = createStaffSession(user);
     const sessionToken = setInternalSessionCookie(res, session);
 
     return res.status(200).json({
@@ -39,7 +39,9 @@ export default async function handler(req, res) {
         authMode: session.authMode,
         staffId: session.staffId,
         staffName: session.staffName,
-        staffRole: session.staffRole
+        staffRole: session.staffRole,
+        username: session.username,
+        displayName: session.displayName
       }
     });
   }

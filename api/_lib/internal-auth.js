@@ -3,6 +3,26 @@ import crypto from "crypto";
 const DEFAULT_COOKIE_NAME = "bk_internal_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
+// Edit internal staff logins here. Passwords stay server-side in this API file.
+// You can also override passwords in Vercel env vars without changing code.
+const INTERNAL_USERS = {
+  erin: {
+    username: "Erin",
+    displayName: "Erin",
+    password: process.env.INTERNAL_USER_ERIN_PASSWORD || "Erin123!"
+  },
+  user2: {
+    username: "User2",
+    displayName: "User 2",
+    password: process.env.INTERNAL_USER2_PASSWORD || "User2123!"
+  },
+  user3: {
+    username: "User3",
+    displayName: "User 3",
+    password: process.env.INTERNAL_USER3_PASSWORD || "User3123!"
+  }
+};
+
 function clean(value) {
   if (value === null || value === undefined) return "";
   return String(value).trim();
@@ -70,14 +90,18 @@ function cookieAttributes(maxAgeSeconds) {
   ].join("; ");
 }
 
-export function createSharedStaffSession() {
+export function createStaffSession(user) {
   const now = Math.floor(Date.now() / 1000);
+  const username = clean(user?.username);
+  const displayName = clean(user?.displayName) || username;
   return {
     isAuthenticated: true,
-    authMode: "shared_passcode",
-    staffId: null,
-    staffName: "Shared Staff Session",
+    authMode: "internal_user",
+    staffId: username,
+    staffName: displayName,
     staffRole: "admin",
+    username,
+    displayName,
     iat: now,
     exp: now + SESSION_TTL_SECONDS
   };
@@ -116,12 +140,20 @@ export function verifySessionToken(token) {
     return null;
   }
 
+  const username = clean(session.username) || clean(session.staffName);
+  const configuredUser = INTERNAL_USERS[username.toLowerCase()];
+  if (!configuredUser) return null;
+
+  const displayName = clean(configuredUser.displayName) || clean(configuredUser.username) || username;
+
   return {
     isAuthenticated: true,
-    authMode: clean(session.authMode) || "shared_passcode",
-    staffId: session.staffId || null,
-    staffName: clean(session.staffName) || "Shared Staff Session",
-    staffRole: clean(session.staffRole) || "admin"
+    authMode: clean(session.authMode) || "internal_user",
+    staffId: session.staffId || username || null,
+    staffName: displayName || "Internal User",
+    staffRole: clean(session.staffRole) || "admin",
+    username,
+    displayName
   };
 }
 
@@ -160,9 +192,16 @@ export async function requireInternalAuth(req, res) {
   return null;
 }
 
-export function passcodeMatches(value) {
-  const expected = clean(process.env.INTERNAL_DASHBOARD_PASSCODE);
-  const provided = clean(value);
-  if (!expected || !provided) return false;
-  return safeEqual(provided, expected);
+export function validateInternalUser(username, password) {
+  const normalizedUsername = clean(username).toLowerCase();
+  const providedPassword = clean(password);
+  const user = INTERNAL_USERS[normalizedUsername];
+
+  if (!user || !providedPassword) return null;
+  if (!safeEqual(providedPassword, user.password)) return null;
+
+  return {
+    username: user.username,
+    displayName: clean(user.displayName) || user.username
+  };
 }
