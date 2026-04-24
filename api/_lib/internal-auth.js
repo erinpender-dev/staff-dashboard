@@ -3,25 +3,25 @@ import crypto from "crypto";
 const DEFAULT_COOKIE_NAME = "bk_internal_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
-// Edit internal staff logins here. Passwords stay server-side in this API file.
-// You can also override passwords in Vercel env vars without changing code.
-const INTERNAL_USERS = {
-  Erin: {
-    username: "erinpender",
-    displayName: "Erin Pender",
+// Edit internal staff logins here. These values stay server-side in the API.
+// You can also override any field in Vercel env vars without changing code.
+const INTERNAL_USERS = [
+  {
+    username: process.env.INTERNAL_USER_ERIN_USERNAME || "erinpender",
+    displayName: process.env.INTERNAL_USER_ERIN_DISPLAY_NAME || "Erin Pender",
     password: process.env.INTERNAL_USER_ERIN_PASSWORD || "Mande125!"
   },
-  user2: {
-    username: "mindiplaisance",
-    displayName: "Mindi Plaisance",
+  {
+    username: process.env.INTERNAL_USER2_USERNAME || "mindiplaisance",
+    displayName: process.env.INTERNAL_USER2_DISPLAY_NAME || "Mindi Plaisance",
     password: process.env.INTERNAL_USER2_PASSWORD || "db-9598"
   },
-  user3: {
-    username: "donnaking",
-    displayName: "Donna King",
+  {
+    username: process.env.INTERNAL_USER3_USERNAME || "donnaking",
+    displayName: process.env.INTERNAL_USER3_DISPLAY_NAME || "Donna King",
     password: process.env.INTERNAL_USER3_PASSWORD || "tempPASS123"
   }
-};
+];
 
 function clean(value) {
   if (value === null || value === undefined) return "";
@@ -45,6 +45,11 @@ function safeEqual(a, b) {
   const right = Buffer.from(String(b));
   if (left.length !== right.length) return false;
   return crypto.timingSafeEqual(left, right);
+}
+
+function findInternalUser(username) {
+  const normalizedUsername = clean(username);
+  return INTERNAL_USERS.find((user) => clean(user.username) === normalizedUsername) || null;
 }
 
 function getCookieName() {
@@ -141,7 +146,7 @@ export function verifySessionToken(token) {
   }
 
   const username = clean(session.username) || clean(session.staffName);
-  const configuredUser = INTERNAL_USERS[username];
+  const configuredUser = findInternalUser(username);
   if (!configuredUser) return null;
 
   const displayName = clean(configuredUser.displayName) || clean(configuredUser.username) || username;
@@ -195,7 +200,7 @@ export async function requireInternalAuth(req, res) {
 export function validateInternalUser(username, password) {
   const normalizedUsername = clean(username);
   const providedPassword = clean(password);
-  const user = INTERNAL_USERS[normalizedUsername];
+  const user = findInternalUser(normalizedUsername);
 
   if (!user || !providedPassword) return null;
   if (!safeEqual(providedPassword, user.password)) return null;
