@@ -7,19 +7,19 @@ const SESSION_TTL_SECONDS = 60 * 60 * 12;
 // You can also override passwords in Vercel env vars without changing code.
 const INTERNAL_USERS = {
   Erin: {
-    username: "Erin",
-    displayName: "Erin",
-    password: process.env.INTERNAL_USER_ERIN_PASSWORD || "Erin123!"
+    username: "erinpender",
+    displayName: "Erin Pender",
+    password: process.env.INTERNAL_USER_ERIN_PASSWORD || "Mande125!"
   },
   user2: {
-    username: "User2",
-    displayName: "User 2",
-    password: process.env.INTERNAL_USER2_PASSWORD || "User2123!"
+    username: "mindiplaisance",
+    displayName: "Mindi Plaisance",
+    password: process.env.INTERNAL_USER2_PASSWORD || "db-9598"
   },
   user3: {
-    username: "User3",
-    displayName: "User 3",
-    password: process.env.INTERNAL_USER3_PASSWORD || "User3123!"
+    username: "donnaking",
+    displayName: "Donna King",
+    password: process.env.INTERNAL_USER3_PASSWORD || "tempPASS123"
   }
 };
 
