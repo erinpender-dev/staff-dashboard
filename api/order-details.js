@@ -76,6 +76,20 @@ function getLoggedPaymentTotal(normalized = {}) {
 
 const BOOSTER_ACCOUNTS_PATH = "booster-club/accounts.json";
 const BOOSTER_LEDGER_PATH = "booster-club/ledger.json";
+const PRODUCTION_BOARD_PATH = "production-board/cards.json";
+const PRODUCTION_STATUSES = [
+  "new",
+  "waiting_design",
+  "waiting_materials",
+  "ready_production",
+  "in_production",
+  "production_finished",
+  "ready_pickup_send",
+  "completed_archived"
+];
+const DESIGN_STATUSES = ["not_started", "needed", "in_progress", "approved", "not_needed"];
+const MATERIAL_STATUSES = ["unknown", "needed", "ordered", "ready", "not_needed"];
+const SUPPLY_STATUSES = ["unknown", "needed", "ordered", "ready", "not_needed"];
 
 async function readPrivatePath(path) {
   const baseUrl = process.env.BLOB_BASE_URL;
@@ -136,6 +150,135 @@ async function writeBoosterLedger(entries) {
     updated_at: new Date().toISOString(),
     entries
   });
+}
+
+function normalizeProductionChoice(value, allowed, fallback) {
+  const normalized = clean(value).toLowerCase().replace(/\s+/g, "_").replace(/-/g, "_");
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeProductionRecordType(value) {
+  const normalized = clean(value).toLowerCase();
+  if (normalized === "draft" || normalized === "draft_order") return "draft_order";
+  if (normalized === "manual") return "manual";
+  return "order";
+}
+
+function getProductionSourceKey(recordType, sourceId) {
+  const type = normalizeProductionRecordType(recordType);
+  const id = clean(sourceId);
+  return type === "manual" ? "" : `${type}:${id}`;
+}
+
+function generateProductionCardId() {
+  return `prod_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeProductionCard(payload = {}, existing = null, { touch = true } = {}) {
+  const now = new Date().toISOString();
+  const recordType = normalizeProductionRecordType(payload.record_type || existing?.record_type);
+  const linkedId = clean(
+    payload.linked_order_id ||
+    payload.linked_draft_order_id ||
+    payload.source_id ||
+    existing?.linked_order_id ||
+    existing?.linked_draft_order_id ||
+    existing?.source_id
+  );
+
+  return {
+    id: clean(existing?.id || payload.id) || generateProductionCardId(),
+    source_key: getProductionSourceKey(recordType, linkedId),
+    record_type: recordType,
+    linked_order_id: recordType === "order" ? linkedId : "",
+    linked_draft_order_id: recordType === "draft_order" ? linkedId : "",
+    source_id: recordType === "manual" ? clean(payload.source_id || existing?.source_id) : linkedId,
+    order_name: clean(payload.order_name || existing?.order_name),
+    customer: clean(payload.customer || existing?.customer),
+    prepared_for: clean(payload.prepared_for || existing?.prepared_for),
+    reference: clean(payload.reference || existing?.reference),
+    due_date: clean(payload.due_date || existing?.due_date),
+    production_status: normalizeProductionChoice(payload.production_status || existing?.production_status, PRODUCTION_STATUSES, "new"),
+    design_status: normalizeProductionChoice(payload.design_status || existing?.design_status, DESIGN_STATUSES, "not_started"),
+    material_status: normalizeProductionChoice(payload.material_status || existing?.material_status, MATERIAL_STATUSES, "unknown"),
+    supply_status: normalizeProductionChoice(payload.supply_status || existing?.supply_status, SUPPLY_STATUSES, "unknown"),
+    notes: clean(payload.notes ?? existing?.notes),
+    archived: Boolean(payload.archived ?? existing?.archived ?? false),
+    created_at: clean(existing?.created_at) || now,
+    updated_at: touch ? now : (clean(payload.updated_at || existing?.updated_at) || now)
+  };
+}
+
+async function readProductionBoard() {
+  const data = await readPrivatePath(PRODUCTION_BOARD_PATH).catch(() => null);
+  const cards = Array.isArray(data?.cards) ? data.cards : [];
+  return cards.map((card) => normalizeProductionCard(card, card, { touch: false }));
+}
+
+async function writeProductionBoard(cards = []) {
+  await writePrivatePath(PRODUCTION_BOARD_PATH, {
+    updated_at: new Date().toISOString(),
+    cards
+  });
+}
+
+function sortProductionCards(cards = []) {
+  return [...cards].sort((a, b) => {
+    const dueDiff = clean(a.due_date).localeCompare(clean(b.due_date));
+    if (clean(a.due_date) && clean(b.due_date) && dueDiff !== 0) return dueDiff;
+    const timeDiff = new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return clean(b.id).localeCompare(clean(a.id));
+  });
+}
+
+async function handleProductionBoard(req, res, action) {
+  if (req.method === "GET") {
+    const cards = await readProductionBoard();
+    if (action === "production_board_get") {
+      const id = clean(req.query?.id || req.query?.card_id);
+      const card = cards.find((item) => clean(item.id) === id) || null;
+      res.status(200).json({ ok: true, card });
+      return;
+    }
+    res.status(200).json({ ok: true, cards: sortProductionCards(cards) });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  const cards = await readProductionBoard();
+  if (action === "production_board_delete") {
+    const id = clean(req.body?.id || req.body?.card_id);
+    const nextCards = cards.filter((card) => clean(card.id) !== id);
+    await writeProductionBoard(nextCards);
+    res.status(200).json({ ok: true, cards: sortProductionCards(nextCards) });
+    return;
+  }
+
+  const recordType = normalizeProductionRecordType(req.body?.record_type);
+  const linkedId = clean(req.body?.linked_order_id || req.body?.linked_draft_order_id || req.body?.source_id);
+  const key = getProductionSourceKey(recordType, linkedId);
+  const existingIndex = cards.findIndex((card) => {
+    if (clean(req.body?.id) && clean(card.id) === clean(req.body.id)) return true;
+    return key && clean(card.source_key) === key;
+  });
+  const existing = existingIndex >= 0 ? cards[existingIndex] : null;
+  const card = normalizeProductionCard(req.body, existing);
+
+  if (card.record_type !== "manual" && !clean(card.source_id)) {
+    res.status(400).json({ error: "A linked order or draft order id is required." });
+    return;
+  }
+
+  if (existingIndex >= 0) cards[existingIndex] = card;
+  else cards.push(card);
+
+  await writeProductionBoard(cards);
+  res.status(200).json({ ok: true, card, cards: sortProductionCards(cards) });
 }
 
 function getLedgerBalances(entries = []) {
@@ -941,6 +1084,11 @@ export default async function handler(req, res) {
   }
 
   try {
+    const action = clean(req.query?.action || req.body?.action).toLowerCase();
+    if (action.startsWith("production_board_")) {
+      return await handleProductionBoard(req, res, action);
+    }
+
     const type = clean(req.query?.type || req.query?.record_type || req.body?.type || req.body?.record_type).toLowerCase();
     if (type === "draft" || type === "draft_order") {
       return await handleDraftOrderDetails(req, res);
