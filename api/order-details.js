@@ -180,6 +180,19 @@ function generateProductionCardId() {
   return `prod_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeProductionComments(value) {
+  const parsed = parseJsonSafe(value, value);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((comment) => ({
+      text: clean(comment?.text),
+      createdAt: clean(comment?.createdAt || comment?.created_at),
+      author: clean(comment?.author)
+    }))
+    .filter((comment) => comment.text);
+}
+
 function normalizeProductionCard(payload = {}, existing = null, { touch = true } = {}) {
   const now = new Date().toISOString();
   const recordType = normalizeProductionRecordType(payload.record_type || existing?.record_type);
@@ -237,6 +250,11 @@ function normalizeProductionCard(payload = {}, existing = null, { touch = true }
     design_notes: clean(payload.design_notes ?? existing?.design_notes),
     printing_materials_notes: clean(payload.printing_materials_notes ?? existing?.printing_materials_notes),
     substrate_notes: clean(payload.substrate_notes ?? existing?.substrate_notes),
+    productionComments: normalizeProductionComments(payload.productionComments ?? existing?.productionComments),
+    designComments: normalizeProductionComments(payload.designComments ?? existing?.designComments),
+    printingMaterialsComments: normalizeProductionComments(payload.printingMaterialsComments ?? existing?.printingMaterialsComments),
+    substrateProductsComments: normalizeProductionComments(payload.substrateProductsComments ?? existing?.substrateProductsComments),
+    productComments: normalizeProductionComments(payload.productComments ?? existing?.productComments),
     notes: clean(payload.notes ?? existing?.notes),
     archived: Boolean(payload.archived ?? existing?.archived ?? false),
     updated_by: clean(payload.updated_by || existing?.updated_by),
