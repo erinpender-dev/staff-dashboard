@@ -521,6 +521,15 @@ function normalizeDraftInput(input = {}) {
         }
 
         if (clean(item?.title)) {
+          const properties = Array.isArray(item.properties)
+            ? [...item.properties]
+            : [];
+          if (clean(item.variant_title) && !properties.some((prop) => clean(prop?.name || prop?.key).toLowerCase() === "variant / description")) {
+            properties.push({ name: "Variant / Description", value: clean(item.variant_title) });
+          }
+          if (clean(item.sku) && !properties.some((prop) => clean(prop?.name || prop?.key).toLowerCase() === "sku")) {
+            properties.push({ name: "SKU", value: clean(item.sku) });
+          }
           const normalized = {
             title: clean(item.title),
             price: clean(item.price || "0.00"),
@@ -528,7 +537,7 @@ function normalizeDraftInput(input = {}) {
             taxable: Boolean(item.taxable),
             requires_shipping: item.requires_shipping !== false
           };
-          if (Array.isArray(item.properties)) normalized.properties = item.properties;
+          if (properties.length) normalized.properties = properties;
           if (item.applied_discount) normalized.applied_discount = item.applied_discount;
           return normalized;
         }
@@ -584,6 +593,12 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
   const customerEmail = clean(draftOrder.email || draftOrder.customer?.email);
   const customerPhone = clean(draftOrder.customer?.phone || draftOrder.billing_address?.phone || draftOrder.shipping_address?.phone);
   const orderTags = getOrderTags(draftOrder);
+  const getLineProperty = (item, name) => {
+    const target = clean(name).toLowerCase();
+    const props = Array.isArray(item?.properties) ? item.properties : [];
+    const found = props.find((prop) => clean(prop?.name || prop?.key).toLowerCase() === target);
+    return clean(found?.value);
+  };
   const lineItems = (draftOrder.line_items || []).map((item) => {
     const qty = Number(item.quantity || 0);
     const price = Number(item.price || 0);
@@ -591,8 +606,8 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
     return {
       id: item.id,
       title: item.title || item.name,
-      variant_title: item.variant_title,
-      sku: item.sku,
+      variant_title: item.variant_title || getLineProperty(item, "Variant / Description") || getLineProperty(item, "Description"),
+      sku: item.sku || getLineProperty(item, "SKU"),
       quantity: item.quantity,
       current_quantity: item.quantity,
       fulfillable_quantity: item.quantity,
@@ -605,6 +620,7 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
       is_removed: qty <= 0,
       variant_id: item.variant_id,
       product_id: item.product_id,
+      properties: Array.isArray(item.properties) ? item.properties : [],
       product_tags: [],
       org_tags: []
     };
