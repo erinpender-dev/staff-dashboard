@@ -514,6 +514,7 @@ function normalizeDraftInput(input = {}) {
             variant_id: Number(item.variant_id),
             quantity: Number(item.quantity || 1)
           };
+          if (clean(item.price)) normalized.price = clean(item.price);
           if (Array.isArray(item.properties)) normalized.properties = item.properties;
           if (item.applied_discount) normalized.applied_discount = item.applied_discount;
           return normalized;
