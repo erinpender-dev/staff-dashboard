@@ -90,6 +90,14 @@ const PRODUCTION_STATUSES = [
 const DESIGN_STATUSES = ["not_started", "needed", "in_progress", "approved", "not_needed"];
 const MATERIAL_STATUSES = ["unknown", "needed", "ordered", "ready", "not_needed"];
 const SUPPLY_STATUSES = ["unknown", "needed", "ordered", "ready", "not_needed"];
+const PRODUCTION_COMPLETE_STATUSES = new Set([
+  "production_finished",
+  "ready_pickup_send",
+  "completed_archived",
+  "order_complete",
+  "complete",
+  "completed"
+]);
 
 async function readPrivatePath(path) {
   const baseUrl = process.env.BLOB_BASE_URL;
@@ -193,6 +201,15 @@ function normalizeProductionCard(payload = {}, existing = null, { touch = true }
     linked_order_id: recordType === "order" ? linkedId : "",
     linked_draft_order_id: recordType === "draft_order" ? linkedId : "",
     source_id: recordType === "manual" ? clean(payload.source_id || existing?.source_id) : linkedId,
+    production_item_id: clean(payload.production_item_id || existing?.production_item_id || payload.id || existing?.id),
+    product_title: clean(payload.product_title || existing?.product_title),
+    design_name: clean(payload.design_name || existing?.design_name || payload.product_title || existing?.product_title),
+    quantity: clean(payload.quantity ?? existing?.quantity),
+    variant_breakdown: Array.isArray(payload.variant_breakdown)
+      ? payload.variant_breakdown
+      : (Array.isArray(existing?.variant_breakdown) ? existing.variant_breakdown : []),
+    payment_status: clean(payload.payment_status || existing?.payment_status),
+    fulfillment_status: clean(payload.fulfillment_status || existing?.fulfillment_status),
     order_name: clean(payload.order_name || existing?.order_name),
     customer: clean(payload.customer || existing?.customer),
     prepared_for: clean(payload.prepared_for || existing?.prepared_for),
@@ -204,6 +221,7 @@ function normalizeProductionCard(payload = {}, existing = null, { touch = true }
     supply_status: normalizeProductionChoice(payload.supply_status || existing?.supply_status, SUPPLY_STATUSES, "unknown"),
     notes: clean(payload.notes ?? existing?.notes),
     archived: Boolean(payload.archived ?? existing?.archived ?? false),
+    updated_by: clean(payload.updated_by || existing?.updated_by),
     created_at: clean(existing?.created_at) || now,
     updated_at: touch ? now : (clean(payload.updated_at || existing?.updated_at) || now)
   };
@@ -230,6 +248,123 @@ function sortProductionCards(cards = []) {
     if (timeDiff !== 0) return timeDiff;
     return clean(b.id).localeCompare(clean(a.id));
   });
+}
+
+function isProductionDesignComplete(card = {}) {
+  return PRODUCTION_COMPLETE_STATUSES.has(
+    clean(card.production_status).toLowerCase().replace(/\s+/g, "_").replace(/-/g, "_")
+  );
+}
+
+async function syncOrderStatusFromProduction({
+  req,
+  cards = [],
+  savedCard = null,
+  shop = "",
+  token = ""
+}) {
+  if (savedCard?.record_type !== "order" || !clean(savedCard.linked_order_id)) {
+    return { skipped: true };
+  }
+
+  const orderId = clean(savedCard.linked_order_id);
+  const bodyDesignStatuses = Array.isArray(req.body?.order_design_statuses)
+    ? req.body.order_design_statuses
+    : [];
+  const designCards = bodyDesignStatuses.length
+    ? bodyDesignStatuses.map((item) => ({
+        id: clean(item?.id || item?.production_item_id),
+        production_status: clean(item?.production_status)
+      })).filter((item) => item.id)
+    : cards.filter((card) => {
+        return card.record_type === "order" &&
+          clean(card.linked_order_id) === orderId &&
+          clean(card.product_title || card.design_name);
+      });
+
+  if (!designCards.length) {
+    return { skipped: true, reason: "No design cards found for order." };
+  }
+
+  const completeCount = designCards.filter(isProductionDesignComplete).length;
+  const nextStatus = completeCount === 0
+    ? "unfulfilled"
+    : (completeCount === designCards.length ? "order complete" : "partially fulfilled");
+
+  const existing = await readPrivateJson(orderId).catch(() => null);
+  const nextOrderDetails = {
+    ...(existing || {}),
+    order_id: orderId,
+    internal_order_status: nextStatus,
+    production_completion: {
+      completed_designs: completeCount,
+      total_designs: designCards.length,
+      updated_at: new Date().toISOString()
+    },
+    updated_at: new Date().toISOString()
+  };
+
+  await put(getOrderDetailsPath(orderId), JSON.stringify(nextOrderDetails, null, 2), {
+    access: "private",
+    contentType: "application/json",
+    token: process.env.BLOB_READ_WRITE_TOKEN,
+    addRandomSuffix: false,
+    allowOverwrite: true
+  });
+
+  if (nextStatus !== "order complete") {
+    return {
+      ok: true,
+      order_id: orderId,
+      internal_order_status: nextStatus,
+      completed_designs: completeCount,
+      total_designs: designCards.length,
+      shopify_fulfillment_sync: { skipped: true, reason: "Order has incomplete design cards." }
+    };
+  }
+
+  if (!shop || !token) {
+    return {
+      ok: true,
+      order_id: orderId,
+      internal_order_status: nextStatus,
+      completed_designs: completeCount,
+      total_designs: designCards.length,
+      shopify_fulfillment_sync: { skipped: true, reason: "Missing Shopify credentials." }
+    };
+  }
+
+  const shopifyOrder = await getOrderById(shop, token, orderId);
+  if (clean(shopifyOrder.fulfillment_status).toLowerCase() === "fulfilled") {
+    return {
+      ok: true,
+      order_id: orderId,
+      internal_order_status: nextStatus,
+      completed_designs: completeCount,
+      total_designs: designCards.length,
+      shopify_fulfillment_sync: { skipped: true, reason: "Shopify order is already fulfilled." }
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      order_id: orderId,
+      internal_order_status: nextStatus,
+      completed_designs: completeCount,
+      total_designs: designCards.length,
+      shopify_fulfillment_sync: await fulfillOrder(shop, token, shopifyOrder)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      order_id: orderId,
+      internal_order_status: nextStatus,
+      completed_designs: completeCount,
+      total_designs: designCards.length,
+      shopify_fulfillment_sync: { ok: false, error: error.message || "Could not fulfill order." }
+    };
+  }
 }
 
 async function handleProductionBoard(req, res, action) {
@@ -262,8 +397,9 @@ async function handleProductionBoard(req, res, action) {
   const recordType = normalizeProductionRecordType(req.body?.record_type);
   const linkedId = clean(req.body?.linked_order_id || req.body?.linked_draft_order_id || req.body?.source_id);
   const key = getProductionSourceKey(recordType, linkedId);
+  const requestId = clean(req.body?.id);
   const existingIndex = cards.findIndex((card) => {
-    if (clean(req.body?.id) && clean(card.id) === clean(req.body.id)) return true;
+    if (requestId) return clean(card.id) === requestId;
     return key && clean(card.source_key) === key;
   });
   const existing = existingIndex >= 0 ? cards[existingIndex] : null;
@@ -278,7 +414,14 @@ async function handleProductionBoard(req, res, action) {
   else cards.push(card);
 
   await writeProductionBoard(cards);
-  res.status(200).json({ ok: true, card, cards: sortProductionCards(cards) });
+  const orderCompletionSync = await syncOrderStatusFromProduction({
+    req,
+    cards,
+    savedCard: card,
+    shop: process.env.SHOPIFY_STORE,
+    token: process.env.SHOPIFY_ACCESS_TOKEN
+  });
+  res.status(200).json({ ok: true, card, cards: sortProductionCards(cards), order_completion_sync: orderCompletionSync });
 }
 
 function getLedgerBalances(entries = []) {
