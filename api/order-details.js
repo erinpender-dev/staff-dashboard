@@ -78,22 +78,20 @@ const BOOSTER_ACCOUNTS_PATH = "booster-club/accounts.json";
 const BOOSTER_LEDGER_PATH = "booster-club/ledger.json";
 const PRODUCTION_BOARD_PATH = "production-board/cards.json";
 const PRODUCTION_STATUSES = [
-  "new",
-  "waiting_design",
-  "waiting_materials",
+  "new_order",
+  "pending",
   "ready_production",
   "in_production",
+  "pause_production",
   "production_finished",
-  "ready_pickup_send",
-  "completed_archived"
+  "order_complete"
 ];
-const DESIGN_STATUSES = ["not_started", "needed", "in_progress", "approved", "not_needed"];
-const MATERIAL_STATUSES = ["unknown", "needed", "ordered", "ready", "not_needed"];
-const SUPPLY_STATUSES = ["unknown", "needed", "ordered", "ready", "not_needed"];
+const DESIGN_STATUSES = ["unknown", "waiting_client", "edits_pending", "pending_approval", "design_complete", "not_needed"];
+const DESIGN_TYPES = ["unknown", "screen", "embroidery", "dtf", "sublimation", "vinyl", "white_toner", "blank"];
+const MATERIAL_STATUSES = ["unknown", "in_stock", "need_to_order", "ordered", "shipped", "delivered", "ready_production", "not_needed"];
+const SUPPLY_STATUSES = MATERIAL_STATUSES;
 const PRODUCTION_COMPLETE_STATUSES = new Set([
   "production_finished",
-  "ready_pickup_send",
-  "completed_archived",
   "order_complete",
   "complete",
   "completed"
@@ -208,6 +206,7 @@ function normalizeProductionCard(payload = {}, existing = null, { touch = true }
     variant_breakdown: Array.isArray(payload.variant_breakdown)
       ? payload.variant_breakdown
       : (Array.isArray(existing?.variant_breakdown) ? existing.variant_breakdown : []),
+    design_type: normalizeProductionChoice(payload.design_type || existing?.design_type, DESIGN_TYPES, "unknown"),
     payment_status: clean(payload.payment_status || existing?.payment_status),
     fulfillment_status: clean(payload.fulfillment_status || existing?.fulfillment_status),
     order_name: clean(payload.order_name || existing?.order_name),
@@ -215,10 +214,29 @@ function normalizeProductionCard(payload = {}, existing = null, { touch = true }
     prepared_for: clean(payload.prepared_for || existing?.prepared_for),
     reference: clean(payload.reference || existing?.reference),
     due_date: clean(payload.due_date || existing?.due_date),
-    production_status: normalizeProductionChoice(payload.production_status || existing?.production_status, PRODUCTION_STATUSES, "new"),
-    design_status: normalizeProductionChoice(payload.design_status || existing?.design_status, DESIGN_STATUSES, "not_started"),
+    deliver_by_date: clean(payload.deliver_by_date || existing?.deliver_by_date),
+    print_by_date: clean(payload.print_by_date || existing?.print_by_date),
+    production_status: normalizeProductionChoice(payload.production_status || existing?.production_status, PRODUCTION_STATUSES, "new_order"),
+    design_status: normalizeProductionChoice(payload.design_status || existing?.design_status, DESIGN_STATUSES, "unknown"),
     material_status: normalizeProductionChoice(payload.material_status || existing?.material_status, MATERIAL_STATUSES, "unknown"),
+    substrate_status: normalizeProductionChoice(payload.substrate_status || existing?.substrate_status || payload.supply_status || existing?.supply_status, SUPPLY_STATUSES, "unknown"),
     supply_status: normalizeProductionChoice(payload.supply_status || existing?.supply_status, SUPPLY_STATUSES, "unknown"),
+    material_in_stock_notes: clean(payload.material_in_stock_notes ?? existing?.material_in_stock_notes),
+    material_order_date: clean(payload.material_order_date || existing?.material_order_date),
+    material_order_number: clean(payload.material_order_number || existing?.material_order_number),
+    material_vendor: clean(payload.material_vendor || existing?.material_vendor),
+    material_eta: clean(payload.material_eta || existing?.material_eta),
+    material_tracking: clean(payload.material_tracking || existing?.material_tracking),
+    substrate_in_stock_notes: clean(payload.substrate_in_stock_notes ?? existing?.substrate_in_stock_notes),
+    substrate_order_date: clean(payload.substrate_order_date || existing?.substrate_order_date),
+    substrate_order_number: clean(payload.substrate_order_number || existing?.substrate_order_number),
+    substrate_vendor: clean(payload.substrate_vendor || existing?.substrate_vendor),
+    substrate_eta: clean(payload.substrate_eta || existing?.substrate_eta),
+    substrate_tracking: clean(payload.substrate_tracking || existing?.substrate_tracking),
+    product_notes: clean(payload.product_notes ?? existing?.product_notes),
+    design_notes: clean(payload.design_notes ?? existing?.design_notes),
+    printing_materials_notes: clean(payload.printing_materials_notes ?? existing?.printing_materials_notes),
+    substrate_notes: clean(payload.substrate_notes ?? existing?.substrate_notes),
     notes: clean(payload.notes ?? existing?.notes),
     archived: Boolean(payload.archived ?? existing?.archived ?? false),
     updated_by: clean(payload.updated_by || existing?.updated_by),
