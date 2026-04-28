@@ -193,6 +193,21 @@ function normalizeProductionComments(value) {
     .filter((comment) => comment.text);
 }
 
+function normalizeProductionTimeline(value) {
+  const parsed = parseJsonSafe(value, value);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((entry) => ({
+      type: clean(entry?.type) === "event" ? "event" : "comment",
+      text: clean(entry?.text),
+      createdAt: clean(entry?.createdAt || entry?.created_at),
+      author: clean(entry?.author || "Staff"),
+      meta: entry?.meta && typeof entry.meta === "object" ? entry.meta : {}
+    }))
+    .filter((entry) => entry.text);
+}
+
 function normalizeProductionCard(payload = {}, existing = null, { touch = true } = {}) {
   const now = new Date().toISOString();
   const recordType = normalizeProductionRecordType(payload.record_type || existing?.record_type);
@@ -255,6 +270,7 @@ function normalizeProductionCard(payload = {}, existing = null, { touch = true }
     printingMaterialsComments: normalizeProductionComments(payload.printingMaterialsComments ?? existing?.printingMaterialsComments),
     substrateProductsComments: normalizeProductionComments(payload.substrateProductsComments ?? existing?.substrateProductsComments),
     productComments: normalizeProductionComments(payload.productComments ?? existing?.productComments),
+    timeline: normalizeProductionTimeline(payload.timeline ?? existing?.timeline),
     notes: clean(payload.notes ?? existing?.notes),
     archived: Boolean(payload.archived ?? existing?.archived ?? false),
     updated_by: clean(payload.updated_by || existing?.updated_by),
