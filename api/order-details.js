@@ -902,6 +902,161 @@ function organizationFromMetaobject(metaobject) {
   };
 }
 
+function uniqueClientValues(values = []) {
+  return [...new Set(values.map((value) => clean(value)).filter(Boolean))];
+}
+
+function normalizeClientContactMetaobject(metaobject) {
+  const fields = fieldMapFromMetaobject(metaobject);
+  const orgField = fields.organization || fields.organizations;
+  const organizations = [];
+
+  if (Array.isArray(orgField?.references?.nodes)) {
+    orgField.references.nodes.forEach((node) => {
+      const org = organizationFromMetaobject(node);
+      const orgName = clean(org?.name || org);
+      if (orgName) organizations.push(orgName);
+    });
+  }
+
+  if (orgField?.reference) {
+    const org = organizationFromMetaobject(orgField.reference);
+    const orgName = clean(org?.name || org);
+    if (orgName) organizations.push(orgName);
+  }
+
+  return {
+    id: clean(metaobject?.id),
+    handle: clean(metaobject?.handle),
+    name: clean(fields.name?.value || fields.full_name?.value || fields.contact_name?.value || metaobject?.displayName),
+    phone_number: clean(fields.phone_number?.value || fields.phone?.value || fields.contact_phone?.value),
+    email: clean(fields.email?.value || fields.email_address?.value || fields.contact_email?.value),
+    organizations: uniqueClientValues(organizations)
+  };
+}
+
+function sortClientContacts(contacts = []) {
+  return [...contacts].sort((a, b) => {
+    const orgCompare = clean(a.organizations?.[0]).localeCompare(clean(b.organizations?.[0]));
+    if (orgCompare) return orgCompare;
+    return clean(a.name).localeCompare(clean(b.name));
+  });
+}
+
+function dedupeClientContacts(contacts = []) {
+  const byKey = new Map();
+  contacts.forEach((contact) => {
+    const key = clean(contact.id) || [contact.name, contact.phone_number, contact.email].map(clean).join("|");
+    if (!key) return;
+    byKey.set(key, { ...(byKey.get(key) || {}), ...contact });
+  });
+  return [...byKey.values()];
+}
+
+async function loadShopClientMetafieldContacts(shop, token) {
+  const query = `
+    query ClientContactMetafield {
+      shop {
+        metafield(namespace: "custom", key: "client_contact_information") {
+          id
+          type
+          references(first: 250) {
+            nodes {
+              ... on Metaobject {
+                id
+                handle
+                type
+                displayName
+                fields {
+                  key
+                  value
+                  reference {
+                    ... on Metaobject {
+                      id
+                      handle
+                      type
+                      displayName
+                      fields {
+                        key
+                        value
+                      }
+                    }
+                  }
+                  references(first: 25) {
+                    nodes {
+                      ... on Metaobject {
+                        id
+                        handle
+                        type
+                        displayName
+                        fields {
+                          key
+                          value
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query);
+  return (data?.shop?.metafield?.references?.nodes || []).map(normalizeClientContactMetaobject);
+}
+
+async function loadAllClientContactMetaobjects(shop, token) {
+  const query = `
+    query ClientContactMetaobjects {
+      metaobjects(type: "client_contact_information", first: 250) {
+        nodes {
+          id
+          handle
+          type
+          displayName
+          fields {
+            key
+            value
+            reference {
+              ... on Metaobject {
+                id
+                handle
+                type
+                displayName
+                fields {
+                  key
+                  value
+                }
+              }
+            }
+            references(first: 25) {
+              nodes {
+                ... on Metaobject {
+                  id
+                  handle
+                  type
+                  displayName
+                  fields {
+                    key
+                    value
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query);
+  return (data?.metaobjects?.nodes || []).map(normalizeClientContactMetaobject);
+}
+
 async function getOrderContactMeta(shop, token, orderId) {
   const query = `
     query OrderContactInfo($id: ID!) {
@@ -1294,6 +1449,29 @@ export default async function handler(req, res) {
 
     if (!shop || !token) {
       res.status(500).json({ error: "Missing SHOPIFY_STORE or SHOPIFY_ACCESS_TOKEN" });
+      return;
+    }
+
+    if (action === "client_list") {
+      if (req.method !== "GET") {
+        res.status(405).json({ error: "Method not allowed." });
+        return;
+      }
+
+      const [metafieldContacts, allContacts] = await Promise.all([
+        loadShopClientMetafieldContacts(shop, token).catch(() => []),
+        loadAllClientContactMetaobjects(shop, token).catch(() => [])
+      ]);
+      const contacts = sortClientContacts(dedupeClientContacts([...metafieldContacts, ...allContacts]));
+      const organizations = uniqueClientValues(contacts.flatMap((contact) => contact.organizations || [])).sort((a, b) =>
+        a.localeCompare(b)
+      );
+
+      res.status(200).json({
+        ok: true,
+        contacts,
+        organizations
+      });
       return;
     }
 
