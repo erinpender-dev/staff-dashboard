@@ -231,6 +231,12 @@ function normalizeProductionCard(payload = {}, existing = null, { touch = true }
     product_title: clean(payload.product_title || existing?.product_title),
     design_name: clean(payload.design_name || existing?.design_name || payload.product_title || existing?.product_title),
     quantity: clean(payload.quantity ?? existing?.quantity),
+    qty_to_produce: clean(payload.qty_to_produce ?? existing?.qty_to_produce),
+    qty_completed: clean(payload.qty_completed ?? existing?.qty_completed),
+    products_needed_qty: clean(payload.products_needed_qty ?? existing?.products_needed_qty),
+    products_in_stock_qty: clean(payload.products_in_stock_qty ?? existing?.products_in_stock_qty),
+    materials_needed_qty: clean(payload.materials_needed_qty ?? existing?.materials_needed_qty),
+    materials_in_stock_qty: clean(payload.materials_in_stock_qty ?? existing?.materials_in_stock_qty),
     variant_breakdown: Array.isArray(payload.variant_breakdown)
       ? payload.variant_breakdown
       : (Array.isArray(existing?.variant_breakdown) ? existing.variant_breakdown : []),
@@ -303,7 +309,10 @@ function sortProductionCards(cards = []) {
 }
 
 function isProductionDesignComplete(card = {}) {
-  return PRODUCTION_COMPLETE_STATUSES.has(
+  const qtyToProduce = Number(card.qty_to_produce ?? card.quantity ?? 0);
+  const qtyCompleted = Number(card.qty_completed ?? 0);
+  const completedByQty = qtyToProduce > 0 && Number.isFinite(qtyCompleted) && qtyCompleted >= qtyToProduce;
+  return completedByQty || PRODUCTION_COMPLETE_STATUSES.has(
     clean(card.production_status).toLowerCase().replace(/\s+/g, "_").replace(/-/g, "_")
   );
 }
@@ -326,7 +335,9 @@ async function syncOrderStatusFromProduction({
   const designCards = bodyDesignStatuses.length
     ? bodyDesignStatuses.map((item) => ({
         id: clean(item?.id || item?.production_item_id),
-        production_status: clean(item?.production_status)
+        production_status: clean(item?.production_status),
+        qty_to_produce: clean(item?.qty_to_produce ?? item?.quantity),
+        qty_completed: clean(item?.qty_completed)
       })).filter((item) => item.id)
     : cards.filter((card) => {
         return card.record_type === "order" &&
