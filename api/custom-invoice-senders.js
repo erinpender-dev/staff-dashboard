@@ -8,7 +8,9 @@ import {
 
 export default async function handler(req, res) {
   setCors(req, res, "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
   console.info("custom-invoice-senders request received", {
     method: req.method,
     hasOrigin: !!req.headers?.origin,

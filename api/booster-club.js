@@ -146,6 +146,7 @@ export default async function handler(req, res) {
       organization,
       status,
       notes,
+      updated_by: clean(req.body?.updated_by),
       updated_at: new Date().toISOString(),
       created_at: existingIndex >= 0 ? accounts[existingIndex].created_at : new Date().toISOString()
     };
@@ -164,6 +165,7 @@ export default async function handler(req, res) {
     const entries = await readLedger();
     return res.status(200).json({
       ok: true,
+      account: record,
       accounts: summarizeAccounts(accounts, entries)
     });
   } catch (error) {

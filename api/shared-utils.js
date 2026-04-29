@@ -17,6 +17,13 @@ export function setCors(req, res, methods = "GET, OPTIONS") {
   res.setHeader("Access-Control-Allow-Methods", methods);
   res.setHeader("Access-Control-Allow-Headers", requestedHeaders || "Content-Type, Authorization, Cache-Control");
   res.setHeader("Access-Control-Allow-Credentials", "true");
+  setNoCache(res);
+}
+
+export function setNoCache(res) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
 }
 
 export function clean(value) {
