@@ -308,6 +308,19 @@ function sortProductionCards(cards = []) {
   });
 }
 
+function getProductionCardTime(card = {}) {
+  const value = clean(card.updated_at || card.updatedAt || card.modified_at || card.created_at);
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function shouldReplaceProductionCard(existing, incoming) {
+  if (!existing) return true;
+  const existingTime = getProductionCardTime(existing);
+  const incomingTime = getProductionCardTime(incoming);
+  return !existingTime || !incomingTime || incomingTime >= existingTime;
+}
+
 function isProductionDesignComplete(card = {}) {
   const qtyToProduce = Number(card.qty_to_produce ?? card.quantity ?? 0);
   const qtyCompleted = Number(card.qty_completed ?? 0);
@@ -461,8 +474,14 @@ async function handleProductionBoard(req, res, action) {
   const linkedId = clean(req.body?.linked_order_id || req.body?.linked_draft_order_id || req.body?.source_id);
   const key = getProductionSourceKey(recordType, linkedId);
   const requestId = clean(req.body?.id);
+  const requestProductionItemId = clean(req.body?.production_item_id || requestId);
   const existingIndex = cards.findIndex((card) => {
-    if (requestId) return clean(card.id) === requestId;
+    if (requestId || requestProductionItemId) {
+      return clean(card.id) === requestId ||
+        clean(card.production_item_id) === requestId ||
+        clean(card.id) === requestProductionItemId ||
+        clean(card.production_item_id) === requestProductionItemId;
+    }
     return key && clean(card.source_key) === key;
   });
   const existing = existingIndex >= 0 ? cards[existingIndex] : null;
@@ -473,18 +492,28 @@ async function handleProductionBoard(req, res, action) {
     return;
   }
 
-  if (existingIndex >= 0) cards[existingIndex] = card;
-  else cards.push(card);
+  const savedCard = shouldReplaceProductionCard(existing, req.body) ? card : normalizeProductionCard(existing, existing, { touch: false });
+
+  if (existingIndex >= 0) cards[existingIndex] = savedCard;
+  else cards.push(savedCard);
 
   await writeProductionBoard(cards);
   const orderCompletionSync = await syncOrderStatusFromProduction({
     req,
     cards,
-    savedCard: card,
+    savedCard,
     shop: process.env.SHOPIFY_STORE,
     token: process.env.SHOPIFY_ACCESS_TOKEN
   });
-  res.status(200).json({ ok: true, card, cards: sortProductionCards(cards), order_completion_sync: orderCompletionSync });
+  res.status(200).json({
+    ok: true,
+    card: savedCard,
+    record: savedCard,
+    production_card: savedCard,
+    cards: sortProductionCards(cards),
+    stale_write_ignored: existingIndex >= 0 && savedCard !== card,
+    order_completion_sync: orderCompletionSync
+  });
 }
 
 function getLedgerBalances(entries = []) {
