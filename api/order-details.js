@@ -1353,7 +1353,7 @@ async function fulfillOrder(shop, token, shopifyOrder) {
 
   const lineItemsByFulfillmentOrder = edges
     .map((edge) => edge.node)
-    .filter((fulfillmentOrder) => fulfillmentOrder.status !== "CLOSED")
+    .filter((fulfillmentOrder) => !["CLOSED", "CANCELLED", "CANCELED"].includes(clean(fulfillmentOrder.status).toUpperCase()))
     .map((fulfillmentOrder) => {
       const fulfillmentOrderLineItems = (fulfillmentOrder.lineItems?.edges || [])
         .map((edge) => edge.node)
@@ -1615,7 +1615,7 @@ export default async function handler(req, res) {
       nextTags.push("Partially Paid");
     }
 
-    const shouldMarkPaid = paymentStatus === "payment received" && isFullyCovered;
+    const shouldMarkPaid = paymentStatus === "payment received" || paymentStatus === "partial payment";
     const shouldFulfill = orderStatus === "order complete";
 
     if (buildTagsString(existingTags) !== buildTagsString(nextTags)) {

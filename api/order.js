@@ -269,8 +269,11 @@ function getOrganizations(saved, contacts) {
 function computeInternalOrderStatus(saved, order) {
   const rawSaved = clean(saved?.internal_order_status).toLowerCase();
   const shopifyFulfillment = clean(order.fulfillment_status || "unfulfilled").toLowerCase();
+  const savedTime = saved?.updated_at ? new Date(saved.updated_at).getTime() : 0;
+  const shopifyTime = order?.updated_at ? new Date(order.updated_at).getTime() : 0;
+  const hasNewerInternalOverride = rawSaved && savedTime && (!shopifyTime || savedTime + 5 * 60 * 1000 >= shopifyTime);
 
-  if (rawSaved) {
+  if (hasNewerInternalOverride) {
     return rawSaved;
   }
 
@@ -278,17 +281,21 @@ function computeInternalOrderStatus(saved, order) {
     return "order complete";
   }
 
-  return "";
+  return rawSaved || "";
 }
 
 function computeInternalPaymentStatus(saved, order) {
   const rawSaved = clean(saved?.internal_payment_status).toLowerCase();
   const shopifyFinancial = clean(order.financial_status).toLowerCase();
+  const savedTime = saved?.updated_at ? new Date(saved.updated_at).getTime() : 0;
+  const shopifyTime = order?.updated_at ? new Date(order.updated_at).getTime() : 0;
+  const hasNewerInternalOverride = rawSaved && savedTime && (!shopifyTime || savedTime + 5 * 60 * 1000 >= shopifyTime);
+
+  if (hasNewerInternalOverride) {
+    return rawSaved;
+  }
 
   if (shopifyFinancial === "paid") {
-    if (rawSaved === "partial payment") {
-      return "partial payment";
-    }
     return "payment received";
   }
 
