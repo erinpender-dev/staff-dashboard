@@ -243,6 +243,20 @@ function getOrderTags(order) {
     .filter(Boolean);
 }
 
+function getDraftPaymentStatus(saved = {}, draftOrder = {}) {
+  const rawSaved = clean(saved?.internal_payment_status).toLowerCase();
+  const tags = getOrderTags(draftOrder).map((tag) => tag.toLowerCase());
+  if (rawSaved) return rawSaved;
+  return tags.includes("paid") ? "payment received" : "";
+}
+
+function getDraftOrderStatus(saved = {}, draftOrder = {}) {
+  const rawSaved = clean(saved?.internal_order_status).toLowerCase();
+  const tags = getOrderTags(draftOrder).map((tag) => tag.toLowerCase());
+  if (rawSaved) return rawSaved;
+  return tags.includes("order complete") ? "order complete" : "";
+}
+
 function getOrderChannel(order) {
   return getManualOrderFlag(order) ? "manual" : "web";
 }
@@ -969,8 +983,8 @@ function mapDraftOrder(draftOrder, saved = {}) {
     total_tax: clean(draftOrder.total_tax),
     total_discounts: clean(draftOrder.applied_discount?.amount || draftOrder.total_discounts || ""),
 
-    financial_status: clean(saved.internal_payment_status || draftOrder.status || "draft").toLowerCase(),
-    fulfillment_status: clean(saved.internal_order_status || "draft").toLowerCase(),
+    financial_status: clean(getDraftPaymentStatus(saved, draftOrder) || draftOrder.status || "draft").toLowerCase(),
+    fulfillment_status: clean(getDraftOrderStatus(saved, draftOrder) || "draft").toLowerCase(),
     source_name: "shopify_draft_order",
     gateway: "",
     note: clean(draftOrder.note),
@@ -1002,8 +1016,8 @@ function mapDraftOrder(draftOrder, saved = {}) {
     staff_notes: clean(saved.staff_notes),
     production_notes: clean(saved.production_notes),
 
-    internal_order_status: clean(saved.internal_order_status),
-    internal_payment_status: clean(saved.internal_payment_status),
+    internal_order_status: getDraftOrderStatus(saved, draftOrder),
+    internal_payment_status: getDraftPaymentStatus(saved, draftOrder),
     payment_received_type: clean(saved.payment_received_type),
     payment_received_amount: clean(saved.payment_received_amount),
     payment_received_note: clean(saved.payment_received_note),

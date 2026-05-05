@@ -45,6 +45,23 @@ function buildTagsString(tags = []) {
   return [...new Set((Array.isArray(tags) ? tags : []).map((tag) => clean(tag)).filter(Boolean))].join(", ");
 }
 
+function tagKey(value) {
+  return clean(value).toLowerCase();
+}
+
+function mergeTags(existingTags = [], tagsToAdd = []) {
+  const merged = [];
+  const seen = new Set();
+  [...parseTags(existingTags), ...tagsToAdd].forEach((tag) => {
+    const cleaned = clean(tag);
+    const key = tagKey(cleaned);
+    if (!cleaned || seen.has(key)) return;
+    seen.add(key);
+    merged.push(cleaned);
+  });
+  return merged;
+}
+
 function getLoggedPayments(normalized = {}) {
   const partialPayments = Array.isArray(normalized.partial_payments) ? normalized.partial_payments : [];
   if (partialPayments.length) return partialPayments;
@@ -1408,7 +1425,60 @@ async function fulfillOrder(shop, token, shopifyOrder) {
   };
 }
 
-async function handleDraftOrderDetails(req, res) {
+async function getDraftOrderById(shop, token, draftOrderId) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/draft_orders/${draftOrderId}.json`, {
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token
+    }
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Could not load draft order: ${text}`);
+  }
+
+  const json = await response.json();
+  return json.draft_order;
+}
+
+async function updateDraftOrderTags(shop, token, draftOrderId, tags = []) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/draft_orders/${draftOrderId}.json`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token
+    },
+    body: JSON.stringify({
+      draft_order: {
+        id: Number(draftOrderId),
+        tags: buildTagsString(tags)
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Could not update draft tags: ${text}`);
+  }
+
+  const json = await response.json().catch(() => ({}));
+  return {
+    ok: true,
+    tags: buildTagsString(parseTags(json?.draft_order?.tags || tags))
+  };
+}
+
+function getDraftStatusTags(normalized = {}) {
+  const tags = [];
+  const paymentStatus = clean(normalized.internal_payment_status).toLowerCase();
+  const orderStatus = clean(normalized.internal_order_status).toLowerCase();
+  if (paymentStatus === "payment received" || paymentStatus === "partial payment") tags.push("Paid");
+  if (orderStatus === "order complete") tags.push("Order Complete");
+  return tags;
+}
+
+async function handleDraftOrderDetails(req, res, shop, token) {
   if (req.method === "GET") {
     const draftOrderId = clean(req.query.draft_order_id || req.query.order_id || req.query.id);
     if (!draftOrderId) {
@@ -1448,16 +1518,29 @@ async function handleDraftOrderDetails(req, res) {
     allowOverwrite: true
   });
 
+  const syncResults = {
+    saved_to_blob: true,
+    shopify_paid_sync: { skipped: true },
+    shopify_tag_sync: { skipped: true },
+    shopify_fulfillment_sync: { skipped: true }
+  };
+
+  const statusTags = getDraftStatusTags(normalized);
+  if (statusTags.length && shop && token) {
+    try {
+      const draftOrder = await getDraftOrderById(shop, token, draftOrderId);
+      const nextTags = mergeTags(draftOrder?.tags, statusTags);
+      syncResults.shopify_tag_sync = await updateDraftOrderTags(shop, token, draftOrderId, nextTags);
+    } catch (error) {
+      syncResults.shopify_tag_sync = { ok: false, error: error.message || "Could not update draft tags." };
+    }
+  }
+
   res.status(200).json({
     ok: true,
     draft_order_id: draftOrderId,
     data: normalized,
-    sync: {
-      saved_to_blob: true,
-      shopify_paid_sync: { skipped: true },
-      shopify_tag_sync: { skipped: true },
-      shopify_fulfillment_sync: { skipped: true }
-    }
+    sync: syncResults
   });
 }
 
@@ -1481,7 +1564,9 @@ export default async function handler(req, res) {
 
     const type = clean(req.query?.type || req.query?.record_type || req.body?.type || req.body?.record_type).toLowerCase();
     if (type === "draft" || type === "draft_order") {
-      return await handleDraftOrderDetails(req, res);
+      const shop = process.env.SHOPIFY_STORE;
+      const token = process.env.SHOPIFY_ACCESS_TOKEN;
+      return await handleDraftOrderDetails(req, res, shop, token);
     }
 
     const shop = process.env.SHOPIFY_STORE;

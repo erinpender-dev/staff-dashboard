@@ -477,6 +477,60 @@ function getOrderTags(order) {
     .filter(Boolean);
 }
 
+function parseTags(value) {
+  if (Array.isArray(value)) return value.map((tag) => clean(tag)).filter(Boolean);
+  return clean(value).split(",").map((tag) => clean(tag)).filter(Boolean);
+}
+
+function buildTagsString(tags = []) {
+  return [...new Set((Array.isArray(tags) ? tags : []).map((tag) => clean(tag)).filter(Boolean))].join(", ");
+}
+
+function mergeTags(existingTags = [], tagsToAdd = []) {
+  const merged = [];
+  const seen = new Set();
+  [...parseTags(existingTags), ...tagsToAdd].forEach((tag) => {
+    const cleaned = clean(tag);
+    const key = cleaned.toLowerCase();
+    if (!cleaned || seen.has(key)) return;
+    seen.add(key);
+    merged.push(cleaned);
+  });
+  return merged;
+}
+
+function getDraftStatusTags(saved = {}, draftOrder = {}) {
+  const tags = [];
+  const existingTags = parseTags(draftOrder?.tags).map((tag) => tag.toLowerCase());
+  const paymentStatus = clean(saved?.internal_payment_status).toLowerCase();
+  const orderStatus = clean(saved?.internal_order_status).toLowerCase();
+  if (
+    paymentStatus === "payment received" ||
+    paymentStatus === "partial payment" ||
+    existingTags.includes("paid")
+  ) {
+    tags.push("Paid");
+  }
+  if (orderStatus === "order complete" || existingTags.includes("order complete")) {
+    tags.push("Order Complete");
+  }
+  return tags;
+}
+
+function getDraftPaymentStatus(saved = {}, draftOrder = {}) {
+  const rawSaved = clean(saved?.internal_payment_status).toLowerCase();
+  const tags = parseTags(draftOrder?.tags).map((tag) => tag.toLowerCase());
+  if (rawSaved) return rawSaved;
+  return tags.includes("paid") ? "payment received" : "";
+}
+
+function getDraftOrderStatus(saved = {}, draftOrder = {}) {
+  const rawSaved = clean(saved?.internal_order_status).toLowerCase();
+  const tags = parseTags(draftOrder?.tags).map((tag) => tag.toLowerCase());
+  if (rawSaved) return rawSaved;
+  return tags.includes("order complete") ? "order complete" : "";
+}
+
 function getBoosterCreditDefaults(saved, orgTags, order) {
   const hasSta = orgTags.includes("sta");
   const orderChannel = getOrderChannel(order);
@@ -620,6 +674,168 @@ async function fetchDraftOrderByIdOrFallback(shop, token, draftOrderId) {
   }
 }
 
+async function updateDraftOrderTags(shop, token, draftOrderId, tags = []) {
+  const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      draft_order: {
+        id: Number(draftOrderId),
+        tags: buildTagsString(tags)
+      }
+    })
+  });
+  return data.draft_order || null;
+}
+
+async function updateOrderTags(shop, token, orderId, tags = []) {
+  const data = await shopifyRestRequest(shop, token, `orders/${encodeURIComponent(orderId)}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      order: {
+        id: Number(orderId),
+        tags: buildTagsString(tags)
+      }
+    })
+  });
+  return data.order || null;
+}
+
+async function fetchOrderById(shop, token, orderId) {
+  const data = await shopifyRestRequest(shop, token, `orders/${encodeURIComponent(orderId)}.json?status=any`);
+  return data.order || null;
+}
+
+async function markOrderPaid(shop, token, orderId) {
+  const response = await fetch(`https://${shop}/admin/api/2025-10/orders/${orderId}/transactions.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token
+    },
+    body: JSON.stringify({
+      transaction: {
+        kind: "capture",
+        status: "success",
+        gateway: "manual"
+      }
+    })
+  });
+
+  if (response.ok) return { ok: true, method: "transactions" };
+
+  const transactionError = await response.text();
+  const mutation = `
+    mutation OrderMarkAsPaid($input: OrderMarkAsPaidInput!) {
+      orderMarkAsPaid(input: $input) {
+        order {
+          id
+          displayFinancialStatus
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, mutation, {
+    input: { id: `gid://shopify/Order/${orderId}` }
+  });
+  const userErrors = data?.orderMarkAsPaid?.userErrors || [];
+  if (userErrors.length) {
+    throw new Error(userErrors.map((error) => error.message).join(" | ") || transactionError || "Could not mark order paid.");
+  }
+
+  return { ok: true, method: "graphql" };
+}
+
+async function fulfillOrder(shop, token, shopifyOrder) {
+  if (!shopifyOrder?.admin_graphql_api_id) {
+    return { skipped: true, reason: "Order is missing Shopify GraphQL id." };
+  }
+
+  const query = `
+    query FulfillmentOrders($id: ID!) {
+      order(id: $id) {
+        id
+        fulfillmentOrders(first: 20) {
+          edges {
+            node {
+              id
+              status
+              lineItems(first: 100) {
+                edges {
+                  node {
+                    id
+                    remainingQuantity
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphQL(shop, token, query, { id: shopifyOrder.admin_graphql_api_id });
+  const lineItemsByFulfillmentOrder = (data?.order?.fulfillmentOrders?.edges || [])
+    .map((edge) => edge.node)
+    .filter((fulfillmentOrder) => !["CLOSED", "CANCELLED", "CANCELED"].includes(clean(fulfillmentOrder.status).toUpperCase()))
+    .map((fulfillmentOrder) => {
+      const fulfillmentOrderLineItems = (fulfillmentOrder.lineItems?.edges || [])
+        .map((edge) => edge.node)
+        .filter((node) => Number(node.remainingQuantity || 0) > 0)
+        .map((node) => ({
+          id: node.id,
+          quantity: Number(node.remainingQuantity || 0)
+        }));
+
+      if (!fulfillmentOrderLineItems.length) return null;
+      return {
+        fulfillmentOrderId: fulfillmentOrder.id,
+        fulfillmentOrderLineItems
+      };
+    })
+    .filter(Boolean);
+
+  if (!lineItemsByFulfillmentOrder.length) {
+    return { skipped: true, reason: "Nothing left to fulfill." };
+  }
+
+  const mutation = `
+    mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
+      fulfillmentCreateV2(fulfillment: $fulfillment) {
+        fulfillment {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const created = await shopifyGraphQL(shop, token, mutation, {
+    fulfillment: {
+      lineItemsByFulfillmentOrder,
+      notifyCustomer: false
+    }
+  });
+  const userErrors = created?.fulfillmentCreateV2?.userErrors || [];
+  if (userErrors.length) {
+    throw new Error(userErrors.map((error) => error.message).join(" | ") || "Could not fulfill order.");
+  }
+
+  return {
+    ok: true,
+    fulfillmentId: created?.fulfillmentCreateV2?.fulfillment?.id || null
+  };
+}
+
 function getDraftCustomerName(draftOrder) {
   const fullName = [draftOrder.customer?.first_name, draftOrder.customer?.last_name]
     .filter(Boolean)
@@ -631,6 +847,86 @@ function getDraftCustomerName(draftOrder) {
       draftOrder.shipping_address?.name ||
       "No customer name"
   );
+}
+
+function normalizeDraftLineItemForUpdate(item = {}, edit = null) {
+  const nextQuantity = edit ? Number(edit.quantity) : Number(item.quantity || 1);
+  const nextPrice = edit ? Number(edit.price) : Number(item.price || item.original_price || 0);
+  if (!Number.isFinite(nextQuantity) || nextQuantity <= 0) {
+    throw new Error(`Invalid quantity for ${clean(item.title || item.name || "line item")}.`);
+  }
+  if (!Number.isFinite(nextPrice) || nextPrice < 0) {
+    throw new Error(`Invalid price for ${clean(item.title || item.name || "line item")}.`);
+  }
+
+  const normalized = {
+    quantity: nextQuantity,
+    price: nextPrice.toFixed(2)
+  };
+
+  if (item.id) normalized.id = Number(item.id);
+  if (item.variant_id) normalized.variant_id = Number(item.variant_id);
+  if (Array.isArray(item.properties) && item.properties.length) normalized.properties = item.properties;
+  if (item.applied_discount) normalized.applied_discount = item.applied_discount;
+
+  if (!item.variant_id) {
+    const title = clean(item.title || item.name || edit?.title);
+    if (!title) {
+      throw new Error("A custom draft line item is missing its title and cannot be safely updated.");
+    }
+    normalized.title = title;
+    normalized.requires_shipping = item.requires_shipping !== false;
+    normalized.taxable = item.taxable !== false;
+  }
+
+  return normalized;
+}
+
+function updateDraftLineItemsPayload(draftOrder = {}, edits = []) {
+  const editMap = new Map();
+  (Array.isArray(edits) ? edits : []).forEach((edit) => {
+    const key = clean(edit?.id || edit?.line_item_id);
+    if (!key) return;
+    editMap.set(key, edit);
+  });
+
+  if (!editMap.size) {
+    throw new Error("No line item changes were provided.");
+  }
+
+  const existingItems = Array.isArray(draftOrder.line_items) ? draftOrder.line_items : [];
+  if (!existingItems.length) {
+    throw new Error("Draft order has no editable line items.");
+  }
+
+  const seen = new Set();
+  const lineItems = existingItems.map((item) => {
+    const key = clean(item.id);
+    const edit = key ? editMap.get(key) : null;
+    if (edit) seen.add(key);
+    return normalizeDraftLineItemForUpdate(item, edit);
+  });
+
+  const missing = [...editMap.keys()].filter((key) => !seen.has(key));
+  if (missing.length) {
+    throw new Error(`Could not find draft line item ${missing[0]} to update.`);
+  }
+
+  return {
+    id: Number(draftOrder.id),
+    line_items: lineItems,
+    note: draftOrder.note || "",
+    note_attributes: Array.isArray(draftOrder.note_attributes) ? draftOrder.note_attributes : [],
+    tags: draftOrder.tags || "",
+    email: draftOrder.email || undefined,
+    customer_id: draftOrder.customer?.id || draftOrder.customer_id || undefined,
+    use_customer_default_address: draftOrder.use_customer_default_address,
+    shipping_address: draftOrder.shipping_address || undefined,
+    billing_address: draftOrder.billing_address || undefined,
+    shipping_line: draftOrder.shipping_line || undefined,
+    applied_discount: draftOrder.applied_discount || undefined,
+    tax_exempt: draftOrder.tax_exempt
+  };
 }
 
 function mapDraftOrderDetail(draftOrder, saved = {}) {
@@ -651,7 +947,9 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
 
     return {
       id: item.id,
+      line_item_id: item.id,
       title: item.title || item.name,
+      name: item.name || item.title,
       variant_title: item.variant_title || getLineProperty(item, "Variant / Description") || getLineProperty(item, "Description"),
       sku: item.sku || getLineProperty(item, "SKU"),
       quantity: item.quantity,
@@ -666,6 +964,9 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
       is_removed: qty <= 0,
       variant_id: item.variant_id,
       product_id: item.product_id,
+      applied_discount: item.applied_discount || null,
+      requires_shipping: item.requires_shipping,
+      taxable: item.taxable,
       properties: Array.isArray(item.properties) ? item.properties : [],
       product_tags: [],
       org_tags: []
@@ -685,8 +986,8 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
     created_at: draftOrder.created_at,
     updated_at: draftOrder.updated_at,
     completed_at: draftOrder.completed_at,
-    financial_status: clean(saved.internal_payment_status || draftOrder.status || "draft").toLowerCase(),
-    fulfillment_status: clean(saved.internal_order_status || "draft").toLowerCase(),
+    financial_status: clean(getDraftPaymentStatus(saved, draftOrder) || draftOrder.status || "draft").toLowerCase(),
+    fulfillment_status: clean(getDraftOrderStatus(saved, draftOrder) || "draft").toLowerCase(),
     total_price: draftOrder.total_price,
     subtotal_price: draftOrder.subtotal_price,
     total_discounts: draftOrder.applied_discount?.amount || "",
@@ -727,8 +1028,8 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
     delivery_notes: clean(saved.delivery_notes),
     staff_notes: clean(saved.staff_notes),
     production_notes: clean(saved.production_notes),
-    internal_order_status: clean(saved.internal_order_status),
-    internal_payment_status: clean(saved.internal_payment_status),
+    internal_order_status: getDraftOrderStatus(saved, draftOrder),
+    internal_payment_status: getDraftPaymentStatus(saved, draftOrder),
     booster_account_name: clean(saved.booster_account_name),
     booster_credit_percentage: clean(saved.booster_credit_percentage),
     booster_credit_status: clean(saved.booster_credit_status),
@@ -755,7 +1056,7 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
   };
 }
 
-async function copyDraftMetadataToOrder(draftOrderId, orderId) {
+async function copyDraftMetadataToOrder(draftOrderId, orderId, options = {}) {
   if (!draftOrderId || !orderId) {
     return { skipped: true, reason: "Missing draft or order id." };
   }
@@ -766,9 +1067,12 @@ async function copyDraftMetadataToOrder(draftOrderId, orderId) {
   }
 
   const existingOrderMetadata = await readPrivateJson(orderId).catch(() => null);
+  const statusTags = Array.isArray(options.statusTags) ? options.statusTags : [];
   const merged = {
     ...(existingOrderMetadata || {}),
     ...draftMetadata,
+    ...(statusTags.includes("Paid") ? { internal_payment_status: "payment received" } : {}),
+    ...(statusTags.includes("Order Complete") ? { internal_order_status: "order complete" } : {}),
     source_draft_order_id: clean(draftOrderId),
     migrated_from_draft_at: new Date().toISOString()
   };
@@ -836,6 +1140,31 @@ async function handleDraftOrder(req, res, shop, token) {
     return res.status(200).json({ ok: true, order: mapDraftOrderDetail(data.draft_order, saved || {}) });
   }
 
+  if (mode === "update_line_items") {
+    const existingDraftOrder = await fetchDraftOrderByIdOrFallback(shop, token, draftOrderId);
+    if (existingDraftOrder?.completed_at || existingDraftOrder?.order_id) {
+      return res.status(400).json({ error: "This draft has already been completed and its line items cannot be edited here." });
+    }
+    const saved = await readPrivateDraftJson(draftOrderId).catch(() => null);
+    const statusTags = getDraftStatusTags(saved || {}, existingDraftOrder);
+    const updatePayload = updateDraftLineItemsPayload(existingDraftOrder, req.body?.line_items || req.body?.items || []);
+    updatePayload.tags = buildTagsString(mergeTags(existingDraftOrder?.tags, statusTags));
+
+    const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}.json`, {
+      method: "PUT",
+      body: JSON.stringify({ draft_order: updatePayload })
+    });
+
+    return res.status(200).json({
+      ok: true,
+      order: mapDraftOrderDetail(data.draft_order, saved || {}),
+      sync: {
+        shopify_line_items_sync: { ok: true },
+        shopify_tag_sync: statusTags.length ? { ok: true, tags: updatePayload.tags } : { skipped: true }
+      }
+    });
+  }
+
   if (mode === "send_invoice") {
     const invoice = req.body?.email || req.body?.draft_order_invoice || {};
     const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}/send_invoice.json`, {
@@ -847,6 +1176,18 @@ async function handleDraftOrder(req, res, shop, token) {
   }
 
   if (mode === "complete") {
+    const saved = await readPrivateDraftJson(draftOrderId).catch(() => null);
+    let draftOrderBeforeComplete = await fetchDraftOrderByIdOrFallback(shop, token, draftOrderId).catch(() => null);
+    const statusTags = getDraftStatusTags(saved || {}, draftOrderBeforeComplete || {});
+    if (draftOrderBeforeComplete && statusTags.length) {
+      draftOrderBeforeComplete = await updateDraftOrderTags(
+        shop,
+        token,
+        draftOrderId,
+        mergeTags(draftOrderBeforeComplete.tags, statusTags)
+      ).catch(() => draftOrderBeforeComplete);
+    }
+
     const params = new URLSearchParams();
     if (req.body?.payment_pending === true || req.body?.payment_pending === "true") {
       params.set("payment_pending", "true");
@@ -859,17 +1200,47 @@ async function handleDraftOrder(req, res, shop, token) {
     const draftOrder = data.draft_order || {};
     const orderId = clean(draftOrder.order_id || data.order?.id || req.body?.order_id);
     const metadataCopy = orderId
-      ? await copyDraftMetadataToOrder(draftOrderId, orderId).catch((error) => ({
+      ? await copyDraftMetadataToOrder(draftOrderId, orderId, { statusTags }).catch((error) => ({
           ok: false,
           error: error.message || "Could not copy draft metadata."
         }))
       : { skipped: true, reason: "Shopify did not return an order id." };
 
+    const realOrderSync = {
+      shopify_paid_sync: { skipped: true },
+      shopify_tag_sync: { skipped: true },
+      shopify_fulfillment_sync: { skipped: true }
+    };
+
+    if (orderId) {
+      const shouldMarkPaid = statusTags.includes("Paid");
+      const shouldFulfill = statusTags.includes("Order Complete");
+      try {
+        const realOrder = await fetchOrderById(shop, token, orderId);
+        if (realOrder) {
+          const nextTags = mergeTags(realOrder.tags, statusTags);
+          if (statusTags.length) {
+            const taggedOrder = await updateOrderTags(shop, token, orderId, nextTags);
+            realOrderSync.shopify_tag_sync = { ok: true, tags: buildTagsString(parseTags(taggedOrder?.tags || nextTags)) };
+          }
+          if (shouldMarkPaid && clean(realOrder.financial_status).toLowerCase() !== "paid") {
+            realOrderSync.shopify_paid_sync = await markOrderPaid(shop, token, orderId);
+          }
+          if (shouldFulfill && clean(realOrder.fulfillment_status).toLowerCase() !== "fulfilled") {
+            realOrderSync.shopify_fulfillment_sync = await fulfillOrder(shop, token, realOrder);
+          }
+        }
+      } catch (error) {
+        realOrderSync.error = error.message || "Could not sync completed order statuses.";
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       order: mapDraftOrderDetail(draftOrder, {}),
       order_id: orderId || null,
-      metadata_copy: metadataCopy
+      metadata_copy: metadataCopy,
+      sync: realOrderSync
     });
   }
 
