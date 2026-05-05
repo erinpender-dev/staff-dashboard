@@ -675,6 +675,7 @@ function mapDraftOrderDetail(draftOrder, saved = {}) {
     customer_email: clean(saved.custom_customer_email) || customerEmail,
     customer_phone: clean(saved.custom_customer_phone) || customerPhone,
     prepared_for: clean(saved.prepared_for) || getPreparedForFromShopify(draftOrder),
+    reference: getReference(saved, clean(draftOrder.name)),
 
     school: clean(saved.school),
     sent_with: clean(saved.sent_with),
