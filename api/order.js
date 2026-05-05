@@ -581,6 +581,35 @@ async function shopifyRestRequest(shop, token, path, options = {}) {
   return json;
 }
 
+async function fetchDraftOrderByIdOrFallback(shop, token, draftOrderId) {
+  const id = clean(draftOrderId);
+  if (!id) return null;
+
+  try {
+    const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(id)}.json`);
+    return data.draft_order || null;
+  } catch (directError) {
+    const statuses = ["open", "invoice_sent"];
+    for (const status of statuses) {
+      const params = new URLSearchParams();
+      params.set("status", status);
+      params.set("limit", "250");
+      params.set("order", "created_at desc");
+      const data = await shopifyRestRequest(shop, token, `draft_orders.json?${params.toString()}`);
+      const match = (Array.isArray(data.draft_orders) ? data.draft_orders : []).find((draftOrder) => {
+        return (
+          clean(draftOrder.id) === id ||
+          clean(draftOrder.name) === id ||
+          clean(draftOrder.name).replace(/^#/, "") === id.replace(/^#/, "") ||
+          clean(draftOrder.order_id) === id
+        );
+      });
+      if (match) return match;
+    }
+    throw directError;
+  }
+}
+
 function getDraftCustomerName(draftOrder) {
   const fullName = [draftOrder.customer?.first_name, draftOrder.customer?.last_name]
     .filter(Boolean)
@@ -747,8 +776,7 @@ async function handleDraftOrder(req, res, shop, token) {
       return res.status(400).json({ error: "Missing draft order id" });
     }
 
-    const data = await shopifyRestRequest(shop, token, `draft_orders/${encodeURIComponent(draftOrderId)}.json`);
-    const draftOrder = data.draft_order;
+    const draftOrder = await fetchDraftOrderByIdOrFallback(shop, token, draftOrderId);
     if (!draftOrder) {
       return res.status(404).json({ error: "Draft order not found" });
     }
@@ -862,7 +890,7 @@ export default async function handler(req, res) {
       return await handleDraftOrder(req, res, shop, token);
     } catch (error) {
       return res.status(500).json({
-        error: "Draft order error",
+        error: error.message || "Could not handle draft order.",
         details: error.message || "Could not handle draft order."
       });
     }
