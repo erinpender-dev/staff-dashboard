@@ -1034,7 +1034,8 @@ function mapDraftOrder(draftOrder, saved = {}) {
 }
 
 async function handleDraftOrdersList(req, res, shop, token) {
-  const status = clean(req.query.status || "open");
+  const requestedStatus = clean(req.query.status || "open").toLowerCase();
+  const status = requestedStatus === "any" ? "open" : requestedStatus;
   const limit = Number(req.query.limit || 100);
   const rawDraftOrders = await fetchDraftOrdersFromShopify({
     shop,
