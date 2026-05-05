@@ -176,6 +176,16 @@ function getPreparedForFromShopify(order) {
   return clean(found?.value);
 }
 
+function getReference(saved, shopifyReference = "") {
+  return clean(
+    saved?.reference ||
+      saved?.job_reference ||
+      saved?.project_reference ||
+      shopifyReference ||
+      ""
+  );
+}
+
 function getShopifyCustomerName(order) {
   if (order.customer) {
     const fullName = [order.customer.first_name, order.customer.last_name]
